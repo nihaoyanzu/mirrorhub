@@ -194,4 +194,4 @@ Prefetch, queues, and cached packages live in the admin UI. Rate limits: **Syste
 
 ## License
 
-Non-commercial use only. See [LICENSE](LICENSE).
+Released under the [GNU General Public License v3.0](LICENSE).

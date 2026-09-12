@@ -194,4 +194,4 @@ pip ──► /simple/     索引（链接已改写到下载服务）
 
 ## 授权
 
-仅限非商用。详见 [LICENSE](LICENSE)。
+本项目采用 [GNU General Public License v3.0](LICENSE)。
