@@ -8,6 +8,8 @@
 
 **PyPI works today.** Hugging Face / npm / Docker are planned.
 
+![Admin dashboard](docs/pic/UI-EN.png)
+
 ---
 
 ## Why

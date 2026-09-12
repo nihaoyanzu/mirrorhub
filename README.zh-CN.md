@@ -8,6 +8,8 @@
 
 当前 **PyPI 已可用**；HuggingFace / npm / Docker 等待完成
 
+![管理台仪表盘](docs/pic/UI.png)
+
 ---
 
 ## 背景
