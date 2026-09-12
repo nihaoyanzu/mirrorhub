@@ -1,106 +1,106 @@
 # MirrorHub
 
-**语言 / Language:** 中文 | [English](README.en.md)
+**Language:** [中文](README.zh-CN.md) | English
 
-> 内网统一下载与缓存节点 —— **同一份制品只从公网拉一次**
+> Intranet download & cache hub — **fetch each artifact from the public internet once**
 >
-> 智能路由 · 并行分片 · 本地缓存 · 限速调度 · 可扩展多源
+> Smart routing · Parallel chunking · Local cache · Rate limits · Multi-source ready
 
-当前 **PyPI 已可用**；HuggingFace / npm / Docker 等待完成
+**PyPI works today.** Hugging Face / npm / Docker are planned.
 
 ---
 
-## 背景
+## Why
 
-内网里常见情况：
+Typical pain on a corporate network:
 
-- 出口带宽被限速，`torch`、CUDA wheel、模型权重动辄几 GB，单线程慢慢爬，装一个环境能卡半小时
-- 依赖树又深又胖：一次 `pip install` 拉几十个包，CI 矩阵再乘上十几份流水线——同样的大文件在公网反复过限速闸门
-- 白天大家一起装环境，出口被打满、限速更狠；同样的大包却没有落盘共享，下一台机器还得再爬一遍
-- 每个开发机各自配代理、各自扛超时重试，没有统一缓存，痛在每台机器上重复一遍
+- Egress is rate-limited; `torch`, CUDA wheels, and model weights are multi-GB — a single-threaded install can take half an hour
+- Fat dependency trees: one `pip install` pulls dozens of packages; CI matrices multiply that across pipelines — the same large files hit the throttle again and again
+- Everyone installs at once, saturates the link, and still has no shared on-disk cache — the next machine crawls the same bytes
+- Each laptop configures its own proxy and retries; without a shared cache, the pain repeats per machine
 
-MirrorHub 做的是：**统一下载入口 + 分片回源 + 本地缓存**。  
-需要访问国际网时，在系统设置里配 **上游代理（HTTP/SOCKS）**，由服务端回源时使用——不是让每个开发机各自配一遍。
+MirrorHub is a **unified download entry + chunked backfill + local cache**.  
+If you need international egress, set an **upstream proxy (HTTP/SOCKS)** in system settings — used by the server when fetching upstream, not on every developer machine.
 
 ```text
-  开发机 / CI                         公网上游
-      │                                    ▲
-      ▼                                    │
-  ┌─ MirrorHub ─────────────────┐         │
-  │ 下载服务 ──► 缓存 HIT?      │         │
-  │              │ 否            │         │
-  │              ▼               │         │
-  │         分片回源 ──可选──► 🌐 上游代理 ─┘
-  │ 管理台：配置 / 队列 / 限速   │
-  └─────────────────────────────┘
+  Dev / CI                              Public upstream
+      │                                       ▲
+      ▼                                       │
+  ┌─ MirrorHub ─────────────────┐            │
+  │ Download svc ──► cache HIT? │            │
+  │                 │ no         │            │
+  │                 ▼            │            │
+  │            chunked fetch ─opt─► 🌐 upstream proxy ─┘
+  │ Admin: config / queue / limits│
+  └──────────────────────────────┘
 ```
 
 ---
 
-## 功能
+## Features
 
-| | 能力 | 说明 |
-|--|------|------|
-| ⚡ | 并行分片 | HTTP Range，大文件多连接拉取 |
-| 💾 | 本地缓存 | 命中直出；容量与 TTL 可配 |
-| 🎯 | 路由策略 | 索引/小文件代理；大文件并行 |
-| 📝 | 内容改写 | simple 索引链接改写到本机下载服务 |
-| 🌐 | 上游代理 | 全局出站 HTTP/SOCKS，方便回源走国际网 |
-| 🎚️ | 限速调度 | 时段带宽；交互优先，预取可让路 |
-| 🔥 | 预取 | 按依赖规格预热缓存 |
-| 📊 | 管理台 | 仪表盘、访问、队列、包检索、系统/模块设置 |
-| 🧩 | 多平台 | 现 PyPI；HF / npm / Docker 等按模块扩展 |
+| | Feature | Notes |
+|--|---------|-------|
+| ⚡ | Parallel chunks | HTTP Range, multi-connection for large files |
+| 💾 | Local cache | Serve hits locally; size & TTL configurable |
+| 🎯 | Routing | Proxy indexes / small files; parallel for large packages |
+| 📝 | Rewriting | Rewrite simple index links to this download service |
+| 🌐 | Upstream proxy | Global outbound HTTP/SOCKS for backfill |
+| 🎚️ | Rate scheduling | Time-window bandwidth; interactive first, prefetch yields |
+| 🔥 | Prefetch | Warm cache from dependency specs |
+| 📊 | Admin UI | Dashboard, access log, queue, package search, settings |
+| 🧩 | Multi-platform | PyPI now; HF / npm / Docker as modules later |
 
 ---
 
-## 与 [devpi](https://devpi.net/)
+## vs [devpi](https://devpi.net/)
 
 | | MirrorHub | devpi |
 |--|:---------:|:-----:|
-| 定位 | 统一下载器 / 多源缓存加速 | PyPI 镜像 + 私有索引与发布 |
-| 避免重复下载 | ✅ | ✅ |
-| 分片 · 限速 · 预取 · 运维面板 | ✅ | — |
-| 上游代理（服务端出站） | ✅ | 视部署 |
-| 私有包上传 · 多索引继承 | — | ✅ |
+| Role | Unified downloader / multi-source cache | PyPI mirror + private indexes & publish |
+| Avoid repeat downloads | ✅ | ✅ |
+| Chunking · rate limit · prefetch · ops UI | ✅ | — |
+| Upstream proxy (server egress) | ✅ | Depends on deploy |
+| Private upload · index inheritance | — | ✅ |
 
 ```text
-MirrorHub：客户端 ──► 下载服务 ──► 缓存 ──► 上游（可经上游代理）
-devpi：   客户端 ──► 索引树 ─┬─► 私有包
-                            └─► root/pypi 镜像
+MirrorHub: client ──► download svc ──► cache ──► upstream (via upstream proxy)
+devpi:     client ──► index tree ─┬─► private packages
+                                 └─► root/pypi mirror
 ```
 
 ---
 
-## 架构
+## Architecture
 
 ```mermaid
 flowchart LR
-  subgraph clients [客户端]
+  subgraph clients [Clients]
     PIP[pip / uv]
     HF[huggingface-cli]
     NPM[npm]
   end
 
   subgraph mh [MirrorHub]
-    DL[下载服务]
-    ADM[管理台]
-    CACHE[本地缓存]
-    RATE[限速 / 调度]
+    DL[Download service]
+    ADM[Admin]
+    CACHE[Local cache]
+    RATE[Rate / scheduler]
   end
 
-  subgraph out [出站]
-    UP[上游代理 可选]
+  subgraph out [Egress]
+    UP[Upstream proxy optional]
   end
 
-  subgraph remote [公网上游]
+  subgraph remote [Public upstream]
     PYPI[PyPI]
     HFHUB[HuggingFace]
     NPMREG[npm]
   end
 
   PIP --> DL
-  HF -.->|规划| DL
-  NPM -.->|规划| DL
+  HF -.->|planned| DL
+  NPM -.->|planned| DL
   ADM -.-> DL
   DL --> CACHE
   CACHE -->|MISS| RATE
@@ -108,62 +108,62 @@ flowchart LR
   UP --> PYPI
   UP -.-> HFHUB
   UP -.-> NPMREG
-  RATE -->|直连| PYPI
+  RATE -->|direct| PYPI
   CACHE -->|HIT| clients
 ```
 
 ---
 
-## 快速开始
+## Quick start
 
-### 1. Docker Compose（推荐，单容器）
+### 1. Docker Compose (recommended, single container)
 
 ```bash
 cd deploy
 docker compose up -d
 ```
 
-| 端口 | 用途 |
-|------|------|
-| http://localhost:18081 | 下载服务（`pip -i`） |
-| http://localhost:18082 | 管理台（默认 `admin` / `admin`） |
+| URL | Role |
+|-----|------|
+| http://localhost:18081 | Download service (`pip -i`) |
+| http://localhost:18082 | Admin UI (default `admin` / `admin`) |
 
+| Role | Port | Use |
+|------|------|-----|
+| 📥 Download | `:18081` | Point clients here |
+| 🛠️ Admin | `:18082` | Web login & config |
 
+Image: `ghcr.io/nihaoyanzu/mirrorhub:latest` (after Actions publishes; or `docker compose up -d --build` locally).
 
-| 角色 | 示例端口 | 用途 |
-|------|----------|------|
-| 📥 下载服务 | `:18081` | `pip` 等客户端指向这里 |
-| 🛠️ 管理台 | `:18082` | Web 登录与配置 |
+### 2. First-time admin config
 
-### 2. 首次配置（管理台）
-
-默认已可用，一般不用改：
+Defaults usually work as-is:
 
 ```text
-登录：admin / admin
+Login: admin / admin
 
-系统设置
-  · 对外 Base URL（PublicHost）→ 127.0.0.1:18081（索引链接改写到下载服务）
-  · 上游代理 → 空（直连，无代理）
+System settings
+  · Public Base URL (PublicHost) → 127.0.0.1:18081 (index link rewrite)
+  · Upstream proxy → empty (direct, no proxy)
 
-PyPI 模块
-  · 启用：是
-  · 索引 / 文件上游 → https://mirrors.aliyun.com/pypi
+PyPI module
+  · Enabled: yes
+  · Index / file upstream → https://mirrors.aliyun.com/pypi
 ```
 
-若机器直连不了上游、必须走公司出口，再在「上游代理」填如 `socks5://127.0.0.1:1080`。
-局域网其它机器访问时，把 PublicHost 改成 `<宿主机IP>:18081`。
+If the host cannot reach upstream directly, set upstream proxy e.g. `socks5://127.0.0.1:1080`.  
+For LAN clients, set PublicHost to `<host-ip>:18081`.
 
-> **上游代理** = MirrorHub 自己访问公网时用的出口。  
-> **不是** 给本机 `pip` 配的 `HTTP_PROXY`，也不是「下载服务」的别名。
+> **Upstream proxy** = MirrorHub’s own egress to the public internet.  
+> It is **not** your laptop’s `HTTP_PROXY`, and **not** another name for the download service.
 
-### 3. 客户端：PyPI
+### 3. Client: PyPI
 
 ```bash
-# 临时
+# one-off
 pip install torch -i http://localhost:18081/simple/ --trusted-host localhost
 
-# 持久
+# persistent
 pip config set global.index-url http://localhost:18081/simple/
 pip config set global.trusted-host localhost
 
@@ -172,18 +172,18 @@ uv pip install torch -i http://localhost:18081/simple/
 ```
 
 ```text
-pip ──► /simple/     索引（链接已改写到下载服务）
+pip ──► /simple/     index (links rewritten to download service)
      ──► /packages/  wheel / sdist
             │
-       HIT ✅ 本地    MISS ❌ 回源（可经上游代理）→ 写入缓存
+       HIT ✅ local    MISS ❌ backfill (via upstream proxy) → cache
 ```
 
-管理台可预取依赖、查看队列与已缓存包；限速见 **系统设置 → 拉取限速**（主要约束预取）。
+Prefetch, queues, and cached packages live in the admin UI. Rate limits: **System → pull rate** (mainly prefetch).
 
-### 4. 其他客户端（规划中）
+### 4. Other clients (planned)
 
-| 客户端 | 状态 | 预期配置 |
-|--------|:----:|----------|
+| Client | Status | Expected config |
+|--------|:------:|-----------------|
 | 🐍 pip / uv | ✅ | `-i http://localhost:18081/simple/` |
 | 🤗 HuggingFace | ☐ | `export HF_ENDPOINT=http://localhost:18081` |
 | 📦 npm | ☐ | `npm config set registry http://localhost:18081/` |
@@ -192,6 +192,6 @@ pip ──► /simple/     索引（链接已改写到下载服务）
 
 ---
 
-## 授权
+## License
 
-仅限非商用。详见 [LICENSE](LICENSE)。
+Non-commercial use only. See [LICENSE](LICENSE).
