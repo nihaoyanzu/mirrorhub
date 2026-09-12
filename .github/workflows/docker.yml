@@ -8,17 +8,23 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# 仓库 Settings → Actions → General → Workflow permissions
+# 须选「Read and write permissions」，否则 GITHUB_TOKEN 无法推 GHCR
 permissions:
   contents: read
   packages: write
 
 env:
   REGISTRY: ghcr.io
+  # GHCR 要求镜像名全小写
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,6 +53,8 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -59,3 +67,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
