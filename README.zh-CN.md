@@ -189,9 +189,3 @@ pip ──► /simple/     索引（链接已改写到下载服务）
 | 📦 npm | ☐ | `npm config set registry http://localhost:18081/` |
 | 🐳 Docker | ☐ | `registry-mirrors` → `http://localhost:18081` |
 | 📊 R / CRAN | ☐ | `options(repos = c(CRAN = "http://localhost:18081/"))` |
-
----
-
-## 授权
-
-本项目采用 [GNU General Public License v3.0](LICENSE)。

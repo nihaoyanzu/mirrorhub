@@ -190,8 +190,3 @@ Prefetch, queues, and cached packages live in the admin UI. Rate limits: **Syste
 | 🐳 Docker | ☐ | `registry-mirrors` → `http://localhost:18081` |
 | 📊 R / CRAN | ☐ | `options(repos = c(CRAN = "http://localhost:18081/"))` |
 
----
-
-## License
-
-Released under the [GNU General Public License v3.0](LICENSE).
