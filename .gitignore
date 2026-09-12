@@ -1,0 +1,41 @@
+.qoder
+.idea
+# 保留 .vscode 启动配置，勿忽略整个目录
+*.log
+.DS_Store
+
+# 环境变量（含密钥）
+.env
+backend/.env
+**/.env
+!.env.example
+!backend/.env.example
+
+# Go
+backend/data/
+backend/bin/
+backend/mirrorhub
+*.exe
+*.exe~
+*.test
+*.out
+/tmp/
+
+# Frontend (Yarn)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+package-lock.json
+
+# Cache / runtime
+**/data/cache/
+*.egg-info
+__pycache__/
+.pypirc
+dist/
+
+scripts/
+
+.vscode/
+.cursor/
+.codegraph/

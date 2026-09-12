@@ -1,0 +1,719 @@
+package downloader
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/livehl/mirrorhub/internal/cache"
+	"github.com/livehl/mirrorhub/internal/platform"
+	"github.com/livehl/mirrorhub/internal/ratelimit"
+	"github.com/livehl/mirrorhub/internal/traffic"
+)
+
+type Options struct {
+	URL           string // 实际上游 GET/Range 地址（可为重定向后 URL）
+	SourceURL     string // 写入缓存的稳定源 URL；空则用 URL
+	CacheKey      string // 必须基于重定向前的路径 URL，勿随 302 变化
+	ContentType   string
+	Concurrency   int
+	ChunkSize     int64
+	MinSize       int64  // 并行流式阈值；0 则用默认 100KiB
+	TTLSeconds    int
+	Platform      string
+	Prefetch      bool
+	Boost         bool // 小文件插队槽
+	Headers       http.Header
+	ChunkTTLHours int
+	Kind          string // package | metadata，默认 package
+	ExpectedSHA256 string // 期望内容摘要（无则跳过校验）
+	// KnownSize：>=0 使用该大小并跳过 HEAD；-1 表示未知长度走串行；未设置时用 HasKnownSize=false
+	HasKnownSize bool
+	KnownSize    int64
+	RangeHeader  string // 客户端 Range，仅 ServePackage HIT 使用
+	// OnAcquired 在拿到任务槽（或缓存命中开始服务）时回调，用于调度器 queued→running
+	OnAcquired func()
+}
+
+type Result struct {
+	Entry       *cache.Entry
+	ContentType string
+	Size        int64
+	FromCache   bool
+	Strategy    string // parallel | serial | cache
+}
+
+type Engine struct {
+	cache      *cache.Manager
+	limiters   *ratelimit.Registry
+	client     *http.Client
+	headClient *http.Client // HEAD 专用：不复用连接，避免连接池卡死
+	log        *zap.Logger
+	idleRatio  func() float64
+	traffic    *traffic.Recorder
+	inflight   sync.Map // cacheKey -> *inflightWait
+}
+
+type inflightMode int
+
+const (
+	inflightModeFetch inflightMode = iota
+	inflightModeStream
+)
+
+type inflightWait struct {
+	done   chan struct{}
+	mode   inflightMode
+	cancel context.CancelFunc // 预取可被交互接管时取消
+	err    error
+	entry  *cache.Entry
+	ct     string
+	size   int64
+}
+
+func New(c *cache.Manager, lim *ratelimit.Registry, upstreamProxy string, log *zap.Logger, idleRatio func() float64, tr *traffic.Recorder) *Engine {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// 包文件本身可能是 gzip（.tar.gz），禁止 Transport 按 Content-Encoding 自动解压
+	transport.DisableCompression = true
+	transport.TLSHandshakeTimeout = 30 * time.Second
+	transport.ResponseHeaderTimeout = 60 * time.Second
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	if upstreamProxy != "" {
+		u, err := url.Parse(upstreamProxy)
+		if err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		}
+	}
+	// HEAD 专用 transport：不复用连接，避免连接池中的卡死连接阻塞 HEAD 请求
+	headTransport := http.DefaultTransport.(*http.Transport).Clone()
+	headTransport.DisableKeepAlives = true
+	headTransport.DisableCompression = true
+	headTransport.TLSHandshakeTimeout = 10 * time.Second
+	headTransport.ResponseHeaderTimeout = 10 * time.Second
+	headTransport.DialContext = (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 10 * time.Second,
+	}).DialContext
+	if upstreamProxy != "" {
+		u, err := url.Parse(upstreamProxy)
+		if err == nil {
+			headTransport.Proxy = http.ProxyURL(u)
+		}
+	}
+	return &Engine{
+		cache:    c,
+		limiters: lim,
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   0,
+		},
+		headClient: &http.Client{
+			Transport: headTransport,
+			Timeout:   10 * time.Second,
+		},
+		log:       log,
+		idleRatio: idleRatio,
+		traffic:   tr,
+	}
+}
+
+// SetUpstreamProxy 热更新出站代理；空字符串表示直连（不走环境变量代理）。
+func (e *Engine) SetUpstreamProxy(proxyURL string) {
+	apply := func(tr *http.Transport) {
+		if tr == nil {
+			return
+		}
+		proxyURL = strings.TrimSpace(proxyURL)
+		if proxyURL == "" {
+			// Proxy=nil 会回退到 ProxyFromEnvironment；显式直连需返回 (nil, nil)
+			tr.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
+			tr.CloseIdleConnections()
+			return
+		}
+		u, err := url.Parse(proxyURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return
+		}
+		tr.Proxy = http.ProxyURL(u)
+		// 换代理后必须丢掉旧 keep-alive，否则会继续直连上游
+		tr.CloseIdleConnections()
+	}
+	if t, ok := e.client.Transport.(*http.Transport); ok {
+		apply(t)
+	}
+	if t, ok := e.headClient.Transport.(*http.Transport); ok {
+		apply(t)
+	}
+}
+
+func (opt Options) metaSource() string {
+	if opt.SourceURL != "" {
+		return opt.SourceURL
+	}
+	return opt.URL
+}
+
+func (opt Options) metaKind() string {
+	if opt.Kind != "" {
+		return opt.Kind
+	}
+	return "package"
+}
+
+func notifyAcquired(opt Options) {
+	if opt.OnAcquired != nil {
+		opt.OnAcquired()
+	}
+}
+
+// GetOrDownload 预取/后台下载：命中缓存或分片/串行拉取。与 ServePackage 共享 inflight 去重。
+func (e *Engine) GetOrDownload(ctx context.Context, opt Options) (*Result, error) {
+	opt.resolveExpectedDigest()
+	if entry, ok := e.cache.Get(opt.CacheKey); ok {
+		notifyAcquired(opt)
+		return &Result{Entry: entry, ContentType: entry.ContentType, Size: entry.Size, FromCache: true, Strategy: "cache"}, nil
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	wait := &inflightWait{done: make(chan struct{}), mode: inflightModeFetch, cancel: cancel}
+	actual, loaded := e.inflight.LoadOrStore(opt.CacheKey, wait)
+	sw := actual.(*inflightWait)
+	if loaded {
+		cancel()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-sw.done:
+		}
+		if sw.err != nil {
+			return nil, sw.err
+		}
+		if sw.entry != nil {
+			return &Result{Entry: sw.entry, ContentType: sw.ct, Size: sw.size, FromCache: true, Strategy: "cache"}, nil
+		}
+		if entry, ok := e.cache.Get(opt.CacheKey); ok {
+			return &Result{Entry: entry, ContentType: entry.ContentType, Size: entry.Size, FromCache: true, Strategy: "cache"}, nil
+		}
+		return nil, fmt.Errorf("download finished but cache miss")
+	}
+	defer func() {
+		e.inflight.Delete(opt.CacheKey)
+		close(wait.done)
+		cancel()
+	}()
+
+	res, err := e.download(runCtx, opt)
+	wait.err = err
+	if res != nil && res.Entry != nil {
+		wait.entry = res.Entry
+		wait.ct = res.ContentType
+		wait.size = res.Size
+	}
+	return res, err
+}
+
+func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
+	opt.resolveExpectedDigest()
+	if opt.Prefetch {
+		if err := e.cache.AllowPrefetchWrite(); err != nil {
+			return nil, err
+		}
+	}
+	pl := e.limiters.Get(opt.Platform)
+	if pl == nil {
+		return nil, fmt.Errorf("no rate limiter for platform %s", opt.Platform)
+	}
+	if err := waitPrefetch(ctx, pl, opt.Prefetch); err != nil {
+		return nil, err
+	}
+	if err := pl.AcquireTask(ctx, opt.Boost); err != nil {
+		return nil, err
+	}
+	defer pl.ReleaseTask(opt.Boost)
+	notifyAcquired(opt)
+
+	size := int64(-1)
+	ct := opt.ContentType
+	if opt.HasKnownSize {
+		size = opt.KnownSize
+	} else {
+		hs, hct, finalURL, err := e.head(ctx, opt)
+		if err != nil {
+			return e.downloadSerial(ctx, pl, opt, ct, "serial")
+		}
+		size = hs
+		if hct != "" {
+			ct = hct
+		}
+		if finalURL != "" {
+			opt.URL = finalURL
+		}
+	}
+	if size < 0 {
+		return e.downloadSerial(ctx, pl, opt, ct, "serial")
+	}
+
+	tmp := e.cache.TempPath(opt.CacheKey)
+	resume := false
+	if st, err := os.Stat(tmp); err == nil && st.Size() == size {
+		resume = true
+	} else {
+		_ = os.Remove(tmp)
+	}
+
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if !resume {
+		if err := f.Truncate(size); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+
+	concurrency := opt.Concurrency
+	if concurrency <= 0 {
+		concurrency = 8
+	}
+	chunkSize := opt.ChunkSize
+	if chunkSize <= 0 {
+		chunkSize = 5 * 1024 * 1024
+	}
+
+	type chunk struct{ start, end int64 }
+	var chunks []chunk
+	for start := int64(0); start < size; start += chunkSize {
+		end := start + chunkSize - 1
+		if end >= size {
+			end = size - 1
+		}
+		chunks = append(chunks, chunk{start, end})
+	}
+
+	doneSet := map[[2]int64]bool{}
+	if resume {
+		for _, r := range e.cache.GetChunks(opt.URL, size, opt.ChunkTTLHours) {
+			doneSet[r] = true
+		}
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(concurrency)
+	var mu sync.Mutex
+	var completed [][2]int64
+
+	for _, ch := range chunks {
+		ch := ch
+		if doneSet[[2]int64{ch.start, ch.end}] {
+			continue
+		}
+		g.Go(func() error {
+			if err := waitPrefetch(gctx, pl, opt.Prefetch); err != nil {
+				return err
+			}
+			if err := pl.AcquireConn(gctx, !opt.Prefetch); err != nil {
+				return err
+			}
+			defer pl.ReleaseConn()
+
+			var lastErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				if err := e.fetchChunk(gctx, pl, opt, f, ch.start, ch.end); err != nil {
+					lastErr = err
+					time.Sleep(time.Duration(1<<attempt) * time.Second)
+					continue
+				}
+				mu.Lock()
+				completed = append(completed, [2]int64{ch.start, ch.end})
+				mu.Unlock()
+				return nil
+			}
+			return lastErr
+		})
+	}
+	if err := g.Wait(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if len(completed) > 0 {
+		_ = e.cache.MarkChunks(opt.URL, size, completed)
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+
+	opt.resolveExpectedDigest()
+	if err := verifyAndRemember(tmp, opt); err != nil {
+		return nil, err
+	}
+
+	entry, err := e.cache.Put(opt.CacheKey, tmp, ct, opt.TTLSeconds, cache.Meta{
+		SourceURL: opt.metaSource(),
+		Kind:      opt.metaKind(),
+		Digest:    opt.ExpectedSHA256,
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = e.cache.ClearChunks(opt.URL)
+	_ = os.Remove(tmp)
+	return &Result{Entry: entry, ContentType: ct, Size: size, FromCache: false, Strategy: "parallel"}, nil
+}
+
+// downloadSerial 单连接整包下载（上游未提供 Content-Length 时使用）
+func (e *Engine) downloadSerial(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, ct, strategy string) (*Result, error) {
+	if err := pl.AcquireConn(ctx, !opt.Prefetch); err != nil {
+		return nil, err
+	}
+	defer pl.ReleaseConn()
+
+	resp, err := e.doGET(ctx, http.MethodGet, opt.URL, opt.Headers, 3)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("upstream %s", resp.Status)
+	}
+	if ct == "" {
+		ct = resp.Header.Get("Content-Type")
+	}
+	if (opt.Kind == "package" || opt.Kind == "") && isHTMLContentType(ct) {
+		return nil, fmt.Errorf("upstream returned HTML, not a package file")
+	}
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+
+	tmp := e.cache.TempPath(opt.CacheKey + ".serial")
+	_ = os.Remove(tmp)
+	f, err := os.Create(tmp)
+	if err != nil {
+		return nil, err
+	}
+	cleanup := true
+	defer func() {
+		_ = f.Close()
+		if cleanup {
+			_ = os.Remove(tmp)
+		}
+	}()
+
+	idle := 0.3
+	if e.idleRatio != nil {
+		idle = e.idleRatio()
+	}
+	lr := &limitReader{
+		ctx:      ctx,
+		r:        resp.Body,
+		pl:       pl,
+		prefetch: opt.Prefetch,
+		idle:     idle,
+		traffic:  e.traffic,
+	}
+	n, err := io.Copy(f, lr)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	opt.resolveExpectedDigest()
+	if err := verifyAndRemember(tmp, opt); err != nil {
+		return nil, err
+	}
+	entry, err := e.cache.Put(opt.CacheKey, tmp, ct, opt.TTLSeconds, cache.Meta{
+		SourceURL: opt.metaSource(),
+		Kind:      opt.metaKind(),
+		Digest:    opt.ExpectedSHA256,
+	})
+	if err != nil {
+		return nil, err
+	}
+	cleanup = false
+	_ = os.Remove(tmp)
+	return &Result{Entry: entry, ContentType: ct, Size: n, FromCache: false, Strategy: strategy}, nil
+}
+
+func waitPrefetch(ctx context.Context, pl *ratelimit.PlatformLimiter, prefetch bool) error {
+	if !prefetch {
+		return nil
+	}
+	for pl.PrefetchPaused() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+// Head 探测上游文件大小（用于 boost / 分片判断）；ContentLength 可能为 -1
+func (e *Engine) Head(ctx context.Context, rawURL string, headers http.Header) (int64, string, string, error) {
+	return e.head(ctx, Options{URL: rawURL, Headers: headers})
+}
+
+func (e *Engine) head(ctx context.Context, opt Options) (int64, string, string, error) {
+	// 使用独立的 headClient，不复用连接池，避免卡死连接阻塞
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, opt.URL, nil)
+	if err != nil {
+		return 0, "", "", err
+	}
+	copyHeaders(req, opt.Headers)
+	req.Header.Del("Accept-Encoding")
+	resp, err := e.headClient.Do(req)
+	if err != nil {
+		return 0, "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return 0, "", "", fmt.Errorf("HEAD %s: %s", opt.URL, resp.Status)
+	}
+	return resp.ContentLength, resp.Header.Get("Content-Type"), resp.Request.URL.String(), nil
+}
+
+func (e *Engine) fetchChunk(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, f *os.File, start, end int64) error {
+	var resp *http.Response
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, opt.URL, nil)
+		if err != nil {
+			return err
+		}
+		copyHeaders(req, opt.Headers)
+		req.Header.Del("Accept-Encoding")
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+		resp, err = e.client.Do(req)
+		if err == nil {
+			break
+		}
+		last = err
+		if !isTransientNetErr(err) {
+			return err
+		}
+	}
+	if resp == nil {
+		return last
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent && !(resp.StatusCode == http.StatusOK && start == 0) {
+		return fmt.Errorf("chunk status %d", resp.StatusCode)
+	}
+	buf := make([]byte, 32*1024)
+	offset := start
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			idle := 0.3
+			if e.idleRatio != nil {
+				idle = e.idleRatio()
+			}
+			if opt.Prefetch {
+				if err := pl.WaitPrefetch(ctx, n, idle); err != nil {
+					return err
+				}
+			} else if err := pl.WaitNClass(ctx, n, ratelimit.ClassInteractive); err != nil {
+				return err
+			}
+			if e.traffic != nil {
+				e.traffic.AddDownload(int64(n))
+			}
+			if _, err := f.WriteAt(buf[:n], offset); err != nil {
+				return err
+			}
+			offset += int64(n)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	return nil
+}
+
+func copyHeaders(req *http.Request, h http.Header) {
+	if h == nil {
+		return
+	}
+	for k, vals := range h {
+		for _, v := range vals {
+			req.Header.Add(k, v)
+		}
+	}
+}
+
+func isTransientNetErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "tls handshake timeout"),
+		strings.Contains(s, "i/o timeout"),
+		strings.Contains(s, "connection reset"),
+		strings.Contains(s, "connection refused"),
+		strings.Contains(s, "unexpected eof"),
+		strings.Contains(s, "broken pipe"),
+		strings.Contains(s, "server closed idle connection"),
+		strings.Contains(s, "temporary"):
+		return true
+	default:
+		return false
+	}
+}
+
+// doGET 对无 body 的上游请求做瞬时错误重试（TLS 握手超时等）
+func (e *Engine) doGET(ctx context.Context, method, rawURL string, headers http.Header, attempts int) (*http.Response, error) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var last error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			backoff := time.Duration(i) * 500 * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			if e.log != nil {
+				e.log.Warn("upstream retry",
+					zap.String("method", method),
+					zap.String("url", rawURL),
+					zap.Int("attempt", i+1),
+					zap.Error(last),
+				)
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		copyHeaders(req, headers)
+		req.Header.Del("Accept-Encoding")
+		resp, err := e.client.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		last = err
+		if !isTransientNetErr(err) {
+			return nil, err
+		}
+	}
+	return nil, last
+}
+
+// ProxyHEAD 轻量级 HEAD 请求，仅返回状态码；用于条件请求续期（If-None-Match）
+func (e *Engine) ProxyHEAD(ctx context.Context, rawURL string, headers http.Header) (int, error) {
+	resp, err := e.doGET(ctx, http.MethodHead, rawURL, headers, 2)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+// ProxyBytes 整包拉取（索引等）；platform 非空时按字节限速
+func (e *Engine) ProxyBytes(ctx context.Context, method, rawURL string, headers http.Header, body io.Reader, platform string, prefetch bool) (int, http.Header, []byte, error) {
+	// 有请求体时不重试，避免 body 被消费后无法重放
+	if body != nil && body != http.NoBody {
+		req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		copyHeaders(req, headers)
+		req.Header.Del("Accept-Encoding")
+		resp, err := e.client.Do(req)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		defer resp.Body.Close()
+		return e.readProxyBody(ctx, resp, platform, prefetch)
+	}
+
+	resp, err := e.doGET(ctx, method, rawURL, headers, 3)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+	return e.readProxyBody(ctx, resp, platform, prefetch)
+}
+
+func (e *Engine) readProxyBody(ctx context.Context, resp *http.Response, platform string, prefetch bool) (int, http.Header, []byte, error) {
+	var r io.Reader = resp.Body
+	limited := false
+	if platform != "" {
+		if pl := e.limiters.Get(platform); pl != nil {
+			idle := 0.3
+			if e.idleRatio != nil {
+				idle = e.idleRatio()
+			}
+			r = &limitReader{ctx: ctx, r: resp.Body, pl: pl, prefetch: prefetch, idle: idle, traffic: e.traffic}
+			limited = true
+		}
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	if e.traffic != nil && !limited {
+		e.traffic.AddDownload(int64(len(data)))
+	}
+	return resp.StatusCode, resp.Header.Clone(), data, nil
+}
+
+// FetchSimpleIndex 读取/缓存改写前的 simple 索引正文（供预取解析与代理共用）。
+// ttlSeconds<=0 时不读写通用包缓存（用于巨型根包名索引等场景）。
+func (e *Engine) FetchSimpleIndex(ctx context.Context, indexURL, platName string, ttlSeconds int, prefetch bool) ([]byte, string, error) {
+	cacheKey := "pypi:index:" + cache.KeyFromURL(indexURL)
+	if ttlSeconds > 0 {
+		if entry, ok := e.cache.Get(cacheKey); ok {
+			data, err := os.ReadFile(entry.FilePath)
+			if err != nil {
+				return nil, "", err
+			}
+			return data, entry.ContentType, nil
+		}
+	}
+	status, respHeader, body, err := e.ProxyBytes(ctx, http.MethodGet, indexURL, nil, nil, platName, prefetch)
+	if err != nil {
+		return nil, "", err
+	}
+	if status >= 400 {
+		return nil, "", fmt.Errorf("upstream status %d", status)
+	}
+	body, _ = platform.MaybeGunzip(body)
+	ct := platform.DetectContentType(respHeader.Get("Content-Type"), body)
+	if ttlSeconds > 0 {
+		_, _ = e.cache.PutBytes(cacheKey, body, ct, ttlSeconds, cache.Meta{
+			SourceURL:    indexURL,
+			Kind:         "index",
+			UpstreamETag: respHeader.Get("ETag"),
+		})
+	}
+	return body, ct, nil
+}

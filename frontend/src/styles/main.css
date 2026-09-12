@@ -1,0 +1,260 @@
+@import "tailwindcss";
+
+/* ── 双主题色值 ──────────────────────────────────────────── */
+
+:root {
+  /* 深色主题（默认） */
+  --color-ink: #0c1117;
+  --color-panel: #151b23;
+  --color-panel-2: #1c2430;
+  --color-line: #2a3441;
+  --color-muted: #8b98a8;
+  --color-fg: #e8eef4;
+  --color-accent: #2f9e7a;
+  --color-warn: #c9a227;
+  --color-danger: #d26464;
+  --color-ok: #4fba78;
+  --color-btn-primary-text: #062016;
+  --color-btn-danger-text: #ffd0d0;
+  --color-selection: rgba(47, 158, 122, 0.35);
+  --color-glow-1: rgba(47, 158, 122, 0.08);
+  --color-glow-2: rgba(28, 50, 70, 0.35);
+  color-scheme: dark;
+}
+
+.light {
+  --color-ink: #f5f7fa;
+  --color-panel: #ffffff;
+  --color-panel-2: #eef1f5;
+  --color-line: #d4d9e0;
+  --color-muted: #6b7280;
+  --color-fg: #1a1e24;
+  --color-accent: #22805e;
+  --color-warn: #a67c1a;
+  --color-danger: #b84040;
+  --color-ok: #2d8f56;
+  --color-btn-primary-text: #ffffff;
+  --color-btn-danger-text: #b84040;
+  --color-selection: rgba(34, 128, 94, 0.25);
+  --color-glow-1: rgba(34, 128, 94, 0.06);
+  --color-glow-2: rgba(160, 180, 210, 0.15);
+  color-scheme: light;
+}
+
+/* ── Tailwind v4 主题映射 ─────────────────────────────────── */
+
+@theme {
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+  --color-ink: var(--color-ink);
+  --color-panel: var(--color-panel);
+  --color-panel-2: var(--color-panel-2);
+  --color-line: var(--color-line);
+  --color-muted: var(--color-muted);
+  --color-fg: var(--color-fg);
+  --color-accent: var(--color-accent);
+  --color-warn: var(--color-warn);
+  --color-danger: var(--color-danger);
+  --color-ok: var(--color-ok);
+}
+
+@layer base {
+  html {
+    /* 全局放大：rem 基准（Tailwind 间距/字号随之放大） */
+    font-size: 17.5px;
+  }
+
+  html,
+  body,
+  #app {
+    @apply m-0 min-h-full bg-ink font-sans text-fg antialiased;
+  }
+
+  body {
+    background-image:
+      radial-gradient(900px 420px at 0% 0%, var(--color-glow-1), transparent 55%),
+      radial-gradient(700px 360px at 100% 0%, var(--color-glow-2), transparent 50%);
+    background-attachment: fixed;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    @apply font-sans;
+  }
+
+  a {
+    @apply no-underline;
+  }
+
+  ::selection {
+    background: var(--color-selection);
+  }
+
+  /* 侧栏/顶栏图标统一略放大 */
+  .nav-link svg,
+  .ui-btn svg,
+  .ui-btn-primary svg,
+  .ui-btn-ghost svg,
+  .ui-btn-danger svg {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+}
+
+@layer components {
+  .ui-panel {
+    @apply rounded-xl border border-line bg-panel/90 backdrop-blur-sm;
+  }
+
+  .ui-input {
+    @apply w-full rounded-lg border border-line bg-ink px-3.5 py-3 text-base text-fg outline-none transition
+      placeholder:text-muted/60 focus:border-accent/70 focus:ring-1 focus:ring-accent/30;
+  }
+
+  .ui-label {
+    @apply mb-2 block text-base text-muted;
+  }
+
+  /* 开关：隐藏原生 checkbox，用轨道 + 滑块呈现 */
+  .ui-switch {
+    @apply relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center;
+  }
+
+  .ui-switch input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  .ui-switch-track {
+    @apply absolute inset-0 rounded-full border border-line bg-panel-2 transition;
+  }
+
+  .ui-switch input:focus-visible ~ .ui-switch-track {
+    @apply ring-2 ring-accent/40;
+  }
+
+  .ui-switch input:checked ~ .ui-switch-track {
+    @apply border-accent bg-accent;
+  }
+
+  .ui-switch-thumb {
+    @apply pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-fg/70 shadow-sm transition;
+  }
+
+  .ui-switch input:checked ~ .ui-switch-thumb {
+    @apply translate-x-4 bg-white;
+  }
+
+  .ui-btn {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-line
+      bg-panel-2 px-4 py-2.5 text-base text-fg transition hover:border-accent/60 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .ui-btn-primary {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-accent
+      bg-accent px-4 py-2.5 text-base font-semibold transition hover:brightness-110
+      disabled:cursor-not-allowed disabled:opacity-50;
+    color: var(--color-btn-primary-text);
+  }
+
+  .ui-btn-danger {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-danger/50
+      bg-panel-2 px-4 py-2.5 text-base transition hover:border-danger hover:bg-danger/10
+      disabled:cursor-not-allowed disabled:opacity-50;
+    color: var(--color-btn-danger-text);
+  }
+
+  .ui-btn-ghost {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-transparent
+      bg-transparent px-4 py-2.5 text-base text-muted transition hover:bg-panel-2 hover:text-fg
+      disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .ui-table {
+    @apply w-full border-collapse text-base;
+  }
+
+  .ui-table th {
+    @apply border-b border-line px-3.5 py-3 text-left text-sm font-medium uppercase tracking-wide text-muted;
+  }
+
+  .ui-table td {
+    @apply border-b border-line/70 px-3.5 py-3.5 align-middle;
+  }
+
+  .ui-table tr:hover td {
+    @apply bg-panel-2/40;
+  }
+
+  .ui-badge {
+    @apply inline-flex items-center rounded-md border border-line px-2.5 py-1 font-mono text-sm;
+  }
+
+  .ui-badge-ok {
+    @apply inline-flex items-center rounded-md border border-ok/30 px-2.5 py-1 font-mono text-sm text-ok;
+  }
+
+  .ui-badge-warn {
+    @apply inline-flex items-center rounded-md border border-warn/30 px-2.5 py-1 font-mono text-sm text-warn;
+  }
+
+  .ui-badge-danger {
+    @apply inline-flex items-center rounded-md border border-danger/30 px-2.5 py-1 font-mono text-sm text-danger;
+  }
+
+  .ui-badge-muted {
+    @apply inline-flex items-center rounded-md border border-line px-2.5 py-1 font-mono text-sm text-muted;
+  }
+
+  .ui-chip {
+    @apply inline-flex cursor-pointer items-center rounded-lg border border-line bg-panel-2/60
+      px-3.5 py-2 text-sm text-muted transition hover:border-accent/40 hover:text-fg;
+  }
+
+  .ui-chip-active {
+    @apply border-accent/50 bg-accent/15 text-fg;
+  }
+
+  .nav-link {
+    @apply flex items-center rounded-lg px-3.5 py-2.5 text-base text-muted transition
+      hover:bg-panel-2 hover:text-fg;
+  }
+
+  .nav-link.router-link-active {
+    @apply bg-accent/15 font-medium text-fg ring-1 ring-accent/30;
+  }
+
+  .ui-tab {
+    @apply cursor-pointer rounded-lg px-3.5 py-2 text-base text-muted transition hover:text-fg;
+  }
+
+  .ui-tab-active {
+    @apply bg-panel-2 text-fg ring-1 ring-line;
+  }
+
+  .ui-section-title {
+    @apply mb-3.5 text-sm font-medium uppercase tracking-wider text-muted;
+  }
+
+  .nav-group-pypi {
+    @apply rounded-xl border border-accent/20 bg-accent/[0.04] p-2;
+  }
+
+  .nav-group-pypi .nav-group-label {
+    @apply text-accent/80;
+  }
+
+  .user-menu-item {
+    @apply flex w-full px-3.5 py-2.5 text-left text-base text-muted transition
+      hover:bg-panel-2 hover:text-fg;
+  }
+}

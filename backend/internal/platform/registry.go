@@ -1,0 +1,136 @@
+package platform
+
+import (
+	"bytes"
+	"compress/gzip"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+
+	"github.com/livehl/mirrorhub/internal/config"
+	"github.com/livehl/mirrorhub/internal/router"
+)
+
+var (
+	mu        sync.RWMutex
+	platforms []Platform
+)
+
+// Register 注册一个平台实现，应在 init() 中调用。
+func Register(p Platform) {
+	mu.Lock()
+	defer mu.Unlock()
+	platforms = append(platforms, p)
+}
+
+// All 返回所有已注册平台。
+func All() []Platform {
+	mu.RLock()
+	defer mu.RUnlock()
+	out := make([]Platform, len(platforms))
+	copy(out, platforms)
+	return out
+}
+
+// MatchResult 包含路由匹配结果和对应的平台实例。
+type MatchResult struct {
+	Platform Platform
+	Match    *router.Match
+}
+
+// Match 按注册顺序尝试匹配请求路径，返回第一个匹配的平台。
+func Match(path string, cfg config.Config) *MatchResult {
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, p := range platforms {
+		pcfg, ok := cfg.Platforms[p.Name()]
+		if !ok || !pcfg.Enabled {
+			continue
+		}
+		if m := p.Route(path, pcfg); m != nil {
+			return &MatchResult{Platform: p, Match: m}
+		}
+	}
+	return nil
+}
+
+// ── 通用 HTTP 工具函数 ────────────────────────────────────────────
+
+// FilterRequestHeaders 过滤请求头，去除逐跳头。
+func FilterRequestHeaders(h http.Header) http.Header {
+	out := h.Clone()
+	for _, k := range []string{
+		"Connection", "Proxy-Connection", "Keep-Alive",
+		"Proxy-Authenticate", "Proxy-Authorization", "Te",
+		"Trailer", "Transfer-Encoding", "Upgrade",
+	} {
+		out.Del(k)
+	}
+	return out
+}
+
+// FilterResponseHeaders 过滤响应头，去除逐跳头和将由代理重新设置的头。
+func FilterResponseHeaders(h http.Header) http.Header {
+	out := h.Clone()
+	for _, k := range []string{
+		"Connection", "Proxy-Connection", "Keep-Alive",
+		"Trailer", "Transfer-Encoding", "Upgrade",
+		"Content-Length", "Content-Encoding",
+		"ETag", // 索引由我们按改写内容重算 ETag
+	} {
+		out.Del(k)
+	}
+	return out
+}
+
+// MaybeGunzip 若 data 为 gzip 则解压，否则原样返回。
+func MaybeGunzip(data []byte) ([]byte, error) {
+	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+		return data, nil
+	}
+	r, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return data, nil
+	}
+	defer r.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		return data, nil
+	}
+	return out, nil
+}
+
+// DetectContentType 根据 body 嗅探修正 simple index 的 Content-Type（含 PEP 691 MIME）。
+func DetectContentType(ct string, data []byte) string {
+	base := strings.ToLower(strings.TrimSpace(ct))
+	if i := strings.IndexByte(base, ';'); i >= 0 {
+		base = strings.TrimSpace(base[:i])
+	}
+	bad := base == "" ||
+		base == "application/x-gzip" ||
+		base == "application/gzip" ||
+		base == "application/octet-stream" ||
+		base == "binary/octet-stream"
+	if !bad && (strings.Contains(base, "json") ||
+		strings.Contains(base, "html") ||
+		strings.Contains(base, "vnd.pypi.simple")) {
+		if strings.Contains(base, "json") {
+			return "application/vnd.pypi.simple.v1+json"
+		}
+		if strings.Contains(base, "vnd.pypi.simple.v1+html") {
+			return "application/vnd.pypi.simple.v1+html"
+		}
+		return "text/html; charset=utf-8"
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return "text/html; charset=utf-8"
+	}
+	switch trimmed[0] {
+	case '{', '[':
+		return "application/vnd.pypi.simple.v1+json"
+	default:
+		return "text/html; charset=utf-8"
+	}
+}

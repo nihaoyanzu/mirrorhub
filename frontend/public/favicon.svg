@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MirrorHub">
+  <defs>
+    <linearGradient id="g" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3bb892"/>
+      <stop offset="1" stop-color="#22805e"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#14222b"/>
+  <!-- 枢纽外环 -->
+  <circle cx="32" cy="32" r="20" fill="none" stroke="url(#g)" stroke-width="3.5"/>
+  <!-- 镜像双弧 -->
+  <path d="M22 22c6.5-6.5 17-6.5 23.5 0" fill="none" stroke="#3bb892" stroke-width="3" stroke-linecap="round"/>
+  <path d="M45.5 42c-6.5 6.5-17 6.5-23.5 0" fill="none" stroke="#7fd4b3" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  <!-- 中心节点 -->
+  <circle cx="32" cy="32" r="6" fill="url(#g)"/>
+  <circle cx="32" cy="32" r="2.5" fill="#e8f7f1"/>
+</svg>
