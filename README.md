@@ -1,5 +1,7 @@
 # MirrorHub
 
+**语言 / Language:** 中文 | [English](README.en.md)
+
 > 内网统一下载与缓存节点 —— **同一份制品只从公网拉一次**
 >
 > 智能路由 · 并行分片 · 本地缓存 · 限速调度 · 可扩展多源
@@ -189,3 +191,7 @@ pip ──► /simple/     索引（链接已改写到下载服务）
 | 📊 R / CRAN | ☐ | `options(repos = c(CRAN = "http://localhost:18081/"))` |
 
 ---
+
+## 授权
+
+仅限非商用。详见 [LICENSE](LICENSE)。
