@@ -2,56 +2,103 @@
 
 **Language:** [中文](README.zh-CN.md) | English
 
-> Intranet download & cache hub — **fetch each artifact from the public internet once**
+> Intranet download & cache hub — **fetch each artifact from the public internet once**, then share it across every laptop and CI job.
 >
-> Smart routing · Parallel chunking · Local cache · Rate limits · Multi-source ready
+> Designed for constrained egress: **smart routing · parallel chunking · interactive-first scheduling · one-box ops**
 
-**PyPI works today.** Hugging Face / npm / Docker are planned.
+**PyPI works today.** Hugging Face / npm / Docker are on the roadmap.
 
 ![Admin dashboard](docs/pic/UI-EN.png)
 
 ---
 
-## Why
+## Why teams reach for MirrorHub
 
-Typical pain on a corporate network:
+Corporate networks usually fail installs the same way:
 
-- Egress is rate-limited; `torch`, CUDA wheels, and model weights are multi-GB — a single-threaded install can take half an hour
-- Fat dependency trees: one `pip install` pulls dozens of packages; CI matrices multiply that across pipelines — the same large files hit the throttle again and again
-- Everyone installs at once, saturates the link, and still has no shared on-disk cache — the next machine crawls the same bytes
-- Each laptop configures its own proxy and retries; without a shared cache, the pain repeats per machine
+- Egress is capped; `torch`, CUDA wheels, and fat wheels crawl for tens of minutes on a single connection
+- The same multi-GB blob is pulled again by the next developer, the next CI matrix cell, the next night rebuild
+- Everyone configures their own proxy and retries — pain multiplies per machine, with **no shared on-disk cache**
 
-MirrorHub is a **unified download entry + chunked backfill + local cache**.  
-If you need international egress, set an **upstream proxy (HTTP/SOCKS)** in system settings — used by the server when fetching upstream, not on every developer machine.
+MirrorHub is the shared choke point that **pulls once, caches locally, and serves the LAN at full speed**.  
+Need international egress? Set one **upstream proxy (HTTP/SOCKS)** on the server — not on every laptop.
+
+---
+
+## Advantages & design
+
+MirrorHub is not “another PyPI mirror.” It is an **ops-shaped download plane** built around how intranet teams actually install software.
+
+### 1. Two ports, clear responsibilities
+
+| Plane | Default | Job |
+|-------|---------|-----|
+| **Download service** | `:18081` | What `pip` / `uv` talk to — indexes, packages, cache hits |
+| **Admin** | `:18082` | Dashboard, queue, prefetch, settings — keep ops off the hot path |
+
+Clients never need the admin port. Operators never confuse “proxy for users” with “panel for admins.”
+
+### 2. Smart path: right strategy per object
+
+- **Indexes & small metadata** → lightweight proxy + rewrite (fast, cache-friendly)
+- **Large artifacts** → **HTTP Range parallel chunks** (saturate the allowed egress, then stick locally)
+- **Index links** rewrite to *this* download host automatically from the request **Host** — LAN machines just point at MirrorHub; no brittle hard-coded public URL in most setups
+
+### 3. Interactive-first scheduling (design center)
+
+Bandwidth and concurrency are scheduled like an ops product, not a dumb pipe:
+
+| Class | Role | Behavior |
+|-------|------|----------|
+| **P0** Interactive | Someone is waiting on `pip install` | **No bandwidth shaping** — finish the human job first |
+| **P1** Resume | Prefetch paused mid-flight | Soft-pause / resume without throwing away progress when possible |
+| **P2** Prefetch | Background warm-up | Yields under load; time-window limits apply here |
+
+Result: daytime installs stay snappy; nights and idle windows fill the cache.
+
+### 4. Prefetch that respects the link
+
+Paste requirements / `pyproject` dependency lines → resolve → warm the cache ahead of the rush.  
+Prefetch is first-class in the UI (queue, progress, batch cancel) so you can see and control backfill instead of guessing.
+
+### 5. One container, zero client sprawl
+
+- Single image: Go binary + embedded admin UI + SQLite (or Postgres if you prefer)
+- Data on a volume (`/data`) — **update the image, keep the cache**
+- **Public setup guide** at `/` (no login): pick a local download address, copy `pip` / `uv` snippets
+
+### 6. Built to grow beyond PyPI
+
+Platforms are **modules** (enable, upstreams, download knobs). PyPI ships now; HF / npm / Docker plug into the same download + cache + rate plane later — one habit for the whole org.
 
 ```text
   Dev / CI                              Public upstream
       │                                       ▲
       ▼                                       │
   ┌─ MirrorHub ─────────────────┐            │
-  │ Download svc ──► cache HIT? │            │
-  │                 │ no         │            │
-  │                 ▼            │            │
-  │            chunked fetch ─opt─► 🌐 upstream proxy ─┘
-  │ Admin: config / queue / limits│
+  │ Download ──► cache HIT?     │            │
+  │               │ miss         │            │
+  │               ▼              │            │
+  │          chunked fetch ─opt─► 🌐 upstream proxy ─┘
+  │ Admin: guide · queue · limits│
   └──────────────────────────────┘
 ```
 
 ---
 
-## Features
+## Feature map
 
-| | Feature | Notes |
-|--|---------|-------|
-| ⚡ | Parallel chunks | HTTP Range, multi-connection for large files |
-| 💾 | Local cache | Serve hits locally; size & TTL configurable |
-| 🎯 | Routing | Proxy indexes / small files; parallel for large packages |
-| 📝 | Rewriting | Rewrite simple index links to this download service |
-| 🌐 | Upstream proxy | Global outbound HTTP/SOCKS for backfill |
-| 🎚️ | Rate scheduling | Time-window bandwidth; interactive first, prefetch yields |
-| 🔥 | Prefetch | Warm cache from dependency specs |
-| 📊 | Admin UI | Dashboard, access log, queue, package search, settings |
-| 🧩 | Multi-platform | PyPI now; HF / npm / Docker as modules later |
+| | Capability | Why it matters |
+|--|------------|----------------|
+| ⚡ | Parallel chunks | Large wheels stop wasting a single TCP stream |
+| 💾 | Local cache + TTL / size caps | Second install is LAN-speed |
+| 🎯 | Strategy routing | Indexes stay light; payloads go wide |
+| 📝 | Host-aware index rewrite | Clients use the address they already hit |
+| 🌐 | Server-side upstream proxy | Configure egress **once** |
+| 🎚️ | Windowed rate limits | Protect the shared pipe; don’t punish interactive installs |
+| 🔥 | Prefetch + live queue UX | Warm cache with progress you can trust |
+| 📊 | Admin UI | Capacity, hits, P0/P1, packages, settings in one place |
+| 🧩 | Modular platforms | Same ops model as you add sources |
 
 ---
 
@@ -59,17 +106,20 @@ If you need international egress, set an **upstream proxy (HTTP/SOCKS)** in syst
 
 | | MirrorHub | devpi |
 |--|:---------:|:-----:|
-| Role | Unified downloader / multi-source cache | PyPI mirror + private indexes & publish |
+| Role | Unified **downloader / multi-source cache** for the LAN | PyPI mirror + **private indexes & publish** |
 | Avoid repeat downloads | ✅ | ✅ |
-| Chunking · rate limit · prefetch · ops UI | ✅ | — |
+| Chunking · interactive-first limits · prefetch · ops UI | ✅ | — |
 | Upstream proxy (server egress) | ✅ | Depends on deploy |
 | Private upload · index inheritance | — | ✅ |
 
 ```text
-MirrorHub: client ──► download svc ──► cache ──► upstream (via upstream proxy)
+MirrorHub: client ──► download svc ──► cache ──► upstream (optional proxy)
 devpi:     client ──► index tree ─┬─► private packages
                                  └─► root/pypi mirror
 ```
+
+Use **MirrorHub** when the pain is egress and repeated pulls.  
+Use **devpi** when you need a private package warehouse. Many teams run both.
 
 ---
 
@@ -118,7 +168,7 @@ flowchart LR
 
 ## Quick start
 
-### 1. Docker Compose (recommended, single container)
+### 1. Docker Compose (recommended)
 
 ```bash
 cd deploy
@@ -127,37 +177,31 @@ docker compose up -d
 
 | URL | Role |
 |-----|------|
-| http://localhost:18081 | Download service (`pip -i`) |
+| http://localhost:18081 | Download service (`pip -i` / `uv`) |
 | http://localhost:18082 | Admin UI (default `admin` / `admin`) |
+| http://localhost:18082/ | **Public setup guide** (no login) — pick address, copy `pip` / `uv` |
 
-| Role | Port | Use |
-|------|------|-----|
-| 📥 Download | `:18081` | Point clients here |
-| 🛠️ Admin | `:18082` | Web login & config |
-
-Image: `ghcr.io/nihaoyanzu/mirrorhub:latest` (after Actions publishes; or `docker compose up -d --build` locally).
+Image: `ghcr.io/nihaoyanzu/mirrorhub:latest` (or `:1.1`). Local build: `docker compose up -d --build`.
 
 ### 2. First-time admin config
 
-Defaults usually work as-is:
+Defaults are usually enough:
 
 ```text
 Login: admin / admin
 
 System settings
-  · Public Base URL (PublicHost) → 127.0.0.1:18081 (index link rewrite)
-  · Upstream proxy → empty (direct, no proxy)
+  · Local addresses → readonly hints for clients (IP:download-port)
+  · Public Host → leave empty to rewrite from request Host
+  · Upstream proxy → empty (direct) or socks5://127.0.0.1:1080 if required
 
 PyPI module
   · Enabled: yes
-  · Index / file upstream → https://mirrors.aliyun.com/pypi
+  · Index / file upstream → https://mirrors.aliyun.com/pypi (or your mirror)
 ```
 
-If the host cannot reach upstream directly, set upstream proxy e.g. `socks5://127.0.0.1:1080`.  
-For LAN clients, set PublicHost to `<host-ip>:18081`.
-
-> **Upstream proxy** = MirrorHub’s own egress to the public internet.  
-> It is **not** your laptop’s `HTTP_PROXY`, and **not** another name for the download service.
+> **Upstream proxy** = MirrorHub’s own path to the public internet.  
+> It is **not** each laptop’s `HTTP_PROXY`, and **not** the download service URL.
 
 ### 3. Client: PyPI
 
@@ -174,21 +218,21 @@ uv pip install torch -i http://localhost:18081/simple/
 ```
 
 ```text
-pip ──► /simple/     index (links rewritten to download service)
+pip ──► /simple/     index (links rewritten to the download service)
      ──► /packages/  wheel / sdist
             │
-       HIT ✅ local    MISS ❌ backfill (via upstream proxy) → cache
+       HIT ✅ local    MISS ❌ backfill (optional upstream proxy) → cache
 ```
 
-Prefetch, queues, and cached packages live in the admin UI. Rate limits: **System → pull rate** (mainly prefetch).
+Prefetch, queues (with progress), and package search live in the admin UI.  
+Rate limits: **System → pull rate** (aimed at prefetch; interactive stays preferred).
 
 ### 4. Other clients (planned)
 
 | Client | Status | Expected config |
 |--------|:------:|-----------------|
-| 🐍 pip / uv | ✅ | `-i http://localhost:18081/simple/` |
-| 🤗 HuggingFace | ☐ | `export HF_ENDPOINT=http://localhost:18081` |
-| 📦 npm | ☐ | `npm config set registry http://localhost:18081/` |
-| 🐳 Docker | ☐ | `registry-mirrors` → `http://localhost:18081` |
-| 📊 R / CRAN | ☐ | `options(repos = c(CRAN = "http://localhost:18081/"))` |
-
+| pip / uv | ✅ | `-i http://localhost:18081/simple/` |
+| HuggingFace | ☐ | `export HF_ENDPOINT=http://localhost:18081` |
+| npm | ☐ | `npm config set registry http://localhost:18081/` |
+| Docker | ☐ | `registry-mirrors` → `http://localhost:18081` |
+| R / CRAN | ☐ | `options(repos = c(CRAN = "http://localhost:18081/"))` |
