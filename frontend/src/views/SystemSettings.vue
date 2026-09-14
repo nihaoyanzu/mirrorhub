@@ -290,13 +290,14 @@ onMounted(() => {
             v-model="form.public_host"
             class="ui-input"
             name="mirrorhub-public-host"
-            type="url"
+            type="text"
             inputmode="url"
             autocomplete="off"
             data-1p-ignore
             data-lpignore="true"
-            placeholder="https://pypi.example.com"
+            :placeholder="t('system.publicHostPlaceholder')"
           />
+          <p class="mt-1.5 text-xs text-muted">{{ t('system.publicHostHint') }}</p>
         </div>
         <div>
           <label class="ui-label">{{ t('system.upstreamProxy') }}</label>

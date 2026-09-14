@@ -275,6 +275,8 @@ export default {
     presets: '预设',
     accountHint: '当前用户：{name}',
     publicHost: '对外 Base URL',
+    publicHostPlaceholder: '留空自动 / 或 https://pypi.example.com',
+    publicHostHint: '用于改写索引里的下载链接。留空或填本机地址时，按客户端实际访问的 Host 自动生成；仅在反代域名与访问 Host 不一致时需手动填写。',
     upstreamProxy: '上游代理',
     oldPassword: '当前密码',
     newPassword: '新密码',

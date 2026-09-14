@@ -274,6 +274,9 @@ export default {
     presets: 'Presets',
     accountHint: 'Signed in as {name}',
     publicHost: 'Public Base URL',
+    publicHostPlaceholder: 'auto (request Host) or https://pypi.example.com',
+    publicHostHint:
+      'Rewrites package index download links. Leave empty or localhost to auto-use the Host clients hit; set explicitly only behind a reverse proxy with a different public name.',
     upstreamProxy: 'Upstream Proxy',
     oldPassword: 'Current password',
     newPassword: 'New password',

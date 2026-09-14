@@ -218,14 +218,15 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.auth.ChangePassword(r.Context(), user, body.OldPassword, body.NewPassword); err != nil {
-		if errors.Is(err, auth.ErrInvalidCredentials) {
-			http.Error(w, "当前密码不正确", http.StatusUnauthorized)
+		if err := s.auth.ChangePassword(r.Context(), user, body.OldPassword, body.NewPassword); err != nil {
+			if errors.Is(err, auth.ErrInvalidCredentials) {
+				// 用 400 而非 401，避免前端把「旧密码错误」当成会话失效并跳转登录
+				http.Error(w, "当前密码不正确", http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

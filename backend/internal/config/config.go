@@ -314,7 +314,7 @@ func merge(boot Bootstrap, rt RuntimeSettings) Config {
 
 func defaultRuntime() RuntimeSettings {
 	return RuntimeSettings{
-		PublicHost:    "127.0.0.1:18081",
+		PublicHost:    "", // 空=按客户端请求 Host 自动改写索引链接
 		UpstreamProxy: "",
 		Cache: CacheConfig{
 			MaxSizeGB:         100,
@@ -458,9 +458,6 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"
-	}
-	if cfg.Server.PublicHost == "" {
-		cfg.Server.PublicHost = "127.0.0.1:18081"
 	}
 }
 

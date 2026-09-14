@@ -17,6 +17,17 @@ const emit = defineEmits<{
   cancel: []
   'update:visible': [value: boolean]
 }>()
+
+function onCancel() {
+  emit('update:visible', false)
+  emit('cancel')
+}
+
+function onConfirm() {
+  // 先关弹窗，避免异步操作完成前一直挡在界面上
+  emit('update:visible', false)
+  emit('confirm')
+}
 </script>
 
 <template>
@@ -25,10 +36,10 @@ const emit = defineEmits<{
       <div
         v-if="visible"
         class="fixed inset-0 z-[100] flex items-center justify-center p-4"
-        @keydown.escape="emit('cancel')"
+        @keydown.escape="onCancel"
       >
         <!-- 遮罩 -->
-        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="emit('cancel')" />
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="onCancel" />
 
         <!-- 对话框 -->
         <div class="ui-panel relative w-full max-w-md p-6 shadow-2xl">
@@ -36,12 +47,12 @@ const emit = defineEmits<{
           <p v-if="description" class="mb-6 text-sm text-muted">{{ description }}</p>
           <slot />
           <div class="mt-6 flex justify-end gap-3">
-            <button class="ui-btn" @click="emit('cancel')">
+            <button class="ui-btn" @click="onCancel">
               {{ cancelText || t('common.cancel') }}
             </button>
             <button
               :class="danger ? 'ui-btn-danger' : 'ui-btn-primary'"
-              @click="emit('confirm')"
+              @click="onConfirm"
             >
               {{ confirmText || t('common.confirm') }}
             </button>

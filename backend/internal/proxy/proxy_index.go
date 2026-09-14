@@ -18,6 +18,7 @@ import (
 
 // handleIndex 缓存改写前正文，每次响应按当前 PublicHost 改写
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.Match, plat platform.Platform, cfg config.Config, prefetch, boost bool, onAcquired func()) (string, error) {
+	cfg = applyRequestPublicHost(cfg, r)
 	release, err := s.acquireProxyTask(r.Context(), m.Platform, boost, onAcquired)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusGatewayTimeout)

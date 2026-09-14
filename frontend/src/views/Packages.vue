@@ -367,7 +367,7 @@ onUnmounted(() => {
 
     <!-- 删除确认弹窗 -->
     <ModalDialog
-      :visible="showDeleteModal"
+      v-model:visible="showDeleteModal"
       :title="t('common.delete')"
       :description="t('packages.deleteConfirm')"
       :confirm-text="t('common.delete')"

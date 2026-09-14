@@ -415,7 +415,7 @@ onMounted(() => {
     </div>
 
     <ModalDialog
-      :visible="showClearModal"
+      v-model:visible="showClearModal"
       :title="t('platform.clearCache')"
       :description="t('platform.clearCacheConfirm')"
       danger

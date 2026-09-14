@@ -180,9 +180,10 @@ func (s *Store) GetAdminPasswordHash(ctx context.Context, username string) (stri
 }
 
 func (s *Store) UpdateAdminPasswordHash(ctx context.Context, username, passwordHash string) error {
+	// 占位符按出现顺序绑定：SQLite 的 ? 不认 $n 编号，须与参数顺序一致
 	res, err := s.db.ExecContext(ctx, s.q(`
-UPDATE admin_users SET password_hash = $2 WHERE username = $1
-`), username, passwordHash)
+UPDATE admin_users SET password_hash = $1 WHERE username = $2
+`), passwordHash, username)
 	if err != nil {
 		return err
 	}
