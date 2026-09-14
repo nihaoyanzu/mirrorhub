@@ -58,6 +58,16 @@ async function cancel(id: string) {
   }
 }
 
+async function cancelMany(ids: string[]) {
+  try {
+    await queueStore.cancelMany(ids)
+    toast.ok(t('queue.cancelledManyOk', { n: ids.length }))
+    await queueStore.load(true)
+  } catch (e: any) {
+    toast.err(e.message || t('queue.cancelFailed'))
+  }
+}
+
 onMounted(() => queueStore.startPolling(4000))
 onUnmounted(() => queueStore.stopPolling())
 </script>
@@ -106,6 +116,7 @@ onUnmounted(() => queueStore.stopPolling())
         :show-priority="true"
         :empty-title="t('prefetch.noTasks')"
         @cancel="cancel"
+        @cancel-many="cancelMany"
       />
     </section>
   </div>

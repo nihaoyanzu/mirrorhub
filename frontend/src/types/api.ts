@@ -73,10 +73,14 @@ export interface QueueTask {
   id: string
   platform: string
   url: string
+  label?: string
+  detail?: string
   status: string
   priority: string
   error: string
   wait_ms: number | null
+  bytes_done?: number
+  bytes_total?: number
   updated_at: string
 }
 

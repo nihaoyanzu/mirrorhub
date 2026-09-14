@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { api, setToken } from '@/api/client'
 import { useSessionStore } from '@/stores/session'
 import { useToastStore } from '@/stores/toast'
@@ -26,8 +26,8 @@ async function submit() {
     setToken(res.token)
     await session.refresh()
     toast.ok(t('login.welcome', { name: res.username }))
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-    await router.replace(redirect || '/')
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
+    await router.replace(redirect && redirect !== '/' ? redirect : '/dashboard')
   } catch (e: any) {
     error.value = e.message || t('login.loginFailed')
   } finally {
@@ -83,6 +83,9 @@ async function submit() {
         <button type="submit" class="ui-btn-primary mt-5 w-full" :disabled="loading || !password">
           {{ loading ? t('login.loggingIn') : t('login.loginBtn') }}
         </button>
+        <p class="mt-4 text-center text-xs text-muted">
+          <RouterLink class="text-accent hover:underline" to="/">{{ t('guide.title') }}</RouterLink>
+        </p>
         <p v-if="error" class="mt-3 text-sm text-danger">{{ error }}</p>
       </form>
     </div>

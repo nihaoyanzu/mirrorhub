@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -43,6 +44,8 @@ type Options struct {
 	RangeHeader  string // 客户端 Range，仅 ServePackage HIT 使用
 	// OnAcquired 在拿到任务槽（或缓存命中开始服务）时回调，用于调度器 queued→running
 	OnAcquired func()
+	// OnProgress 下载进度（已完成字节, 总字节；总字节未知时为 0）
+	OnProgress func(done, total int64)
 }
 
 type Result struct {
@@ -180,10 +183,26 @@ func notifyAcquired(opt Options) {
 	}
 }
 
+func notifyProgress(opt Options, done, total int64) {
+	if opt.OnProgress != nil {
+		opt.OnProgress(done, total)
+	}
+}
+
 // GetOrDownload 预取/后台下载：命中缓存或分片/串行拉取。与 ServePackage 共享 inflight 去重。
 func (e *Engine) GetOrDownload(ctx context.Context, opt Options) (*Result, error) {
 	opt.resolveExpectedDigest()
 	if entry, ok := e.cache.Get(opt.CacheKey); ok {
+		// 预取命中也必须占任务槽，避免海量缓存命中同时 MarkRunning 冲破并发上限
+		var pl *ratelimit.PlatformLimiter
+		if opt.Prefetch {
+			pl = e.limiters.Get(opt.Platform)
+			if err := acquireTaskSlot(ctx, pl, true, opt.Boost); err != nil {
+				return nil, err
+			}
+			defer pl.ReleaseTask(opt.Boost)
+		}
+		notifyProgress(opt, entry.Size, entry.Size)
 		notifyAcquired(opt)
 		return &Result{Entry: entry, ContentType: entry.ContentType, Size: entry.Size, FromCache: true, Strategy: "cache"}, nil
 	}
@@ -236,10 +255,7 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 	if pl == nil {
 		return nil, fmt.Errorf("no rate limiter for platform %s", opt.Platform)
 	}
-	if err := waitPrefetch(ctx, pl, opt.Prefetch); err != nil {
-		return nil, err
-	}
-	if err := pl.AcquireTask(ctx, opt.Boost); err != nil {
+	if err := acquireTaskSlot(ctx, pl, opt.Prefetch, opt.Boost); err != nil {
 		return nil, err
 	}
 	defer pl.ReleaseTask(opt.Boost)
@@ -305,10 +321,21 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 	}
 
 	doneSet := map[[2]int64]bool{}
+	var already int64
 	if resume {
 		for _, r := range e.cache.GetChunks(opt.URL, size, opt.ChunkTTLHours) {
 			doneSet[r] = true
+			already += r[1] - r[0] + 1
 		}
+	}
+	var downloaded atomic.Int64
+	downloaded.Store(already)
+	notifyProgress(opt, already, size)
+	onBytes := func(n int64) {
+		if n <= 0 {
+			return
+		}
+		notifyProgress(opt, downloaded.Add(n), size)
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -332,7 +359,15 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 
 			var lastErr error
 			for attempt := 0; attempt < 3; attempt++ {
-				if err := e.fetchChunk(gctx, pl, opt, f, ch.start, ch.end); err != nil {
+				var got int64
+				err := e.fetchChunk(gctx, pl, opt, f, ch.start, ch.end, func(n int64) {
+					got += n
+					onBytes(n)
+				})
+				if err != nil {
+					if got > 0 {
+						notifyProgress(opt, downloaded.Add(-got), size)
+					}
 					lastErr = err
 					time.Sleep(time.Duration(1<<attempt) * time.Second)
 					continue
@@ -356,6 +391,7 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 		return nil, err
 	}
 
+	notifyProgress(opt, size, size)
 	opt.resolveExpectedDigest()
 	if err := verifyAndRemember(tmp, opt); err != nil {
 		return nil, err
@@ -425,13 +461,30 @@ func (e *Engine) downloadSerial(ctx context.Context, pl *ratelimit.PlatformLimit
 		idle:     idle,
 		traffic:  e.traffic,
 	}
-	n, err := io.Copy(f, lr)
+	total := resp.ContentLength
+	if total > 0 {
+		notifyProgress(opt, 0, total)
+	}
+	var done atomic.Int64
+	cw := &progressWriter{
+		w: f,
+		onWrite: func(n int64) {
+			d := done.Add(n)
+			if total > 0 {
+				notifyProgress(opt, d, total)
+			} else {
+				notifyProgress(opt, d, 0)
+			}
+		},
+	}
+	n, err := io.Copy(cw, lr)
 	if err != nil {
 		return nil, err
 	}
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
+	notifyProgress(opt, n, n)
 	opt.resolveExpectedDigest()
 	if err := verifyAndRemember(tmp, opt); err != nil {
 		return nil, err
@@ -450,7 +503,7 @@ func (e *Engine) downloadSerial(ctx context.Context, pl *ratelimit.PlatformLimit
 }
 
 func waitPrefetch(ctx context.Context, pl *ratelimit.PlatformLimiter, prefetch bool) error {
-	if !prefetch {
+	if !prefetch || pl == nil {
 		return nil
 	}
 	for pl.PrefetchPaused() {
@@ -461,6 +514,28 @@ func waitPrefetch(ctx context.Context, pl *ratelimit.PlatformLimiter, prefetch b
 		}
 	}
 	return nil
+}
+
+// acquireTaskSlot 获取任务槽；预取在 pause 期间不占槽，避免暂停间隙继续开跑、冲破并发体感。
+func acquireTaskSlot(ctx context.Context, pl *ratelimit.PlatformLimiter, prefetch, boost bool) error {
+	if pl == nil {
+		return fmt.Errorf("no rate limiter")
+	}
+	if !prefetch {
+		return pl.AcquireTask(ctx, boost)
+	}
+	for {
+		if err := waitPrefetch(ctx, pl, true); err != nil {
+			return err
+		}
+		if err := pl.AcquireTask(ctx, boost); err != nil {
+			return err
+		}
+		if !pl.PrefetchPaused() {
+			return nil
+		}
+		pl.ReleaseTask(boost)
+	}
 }
 
 // Head 探测上游文件大小（用于 boost / 分片判断）；ContentLength 可能为 -1
@@ -487,7 +562,7 @@ func (e *Engine) head(ctx context.Context, opt Options) (int64, string, string, 
 	return resp.ContentLength, resp.Header.Get("Content-Type"), resp.Request.URL.String(), nil
 }
 
-func (e *Engine) fetchChunk(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, f *os.File, start, end int64) error {
+func (e *Engine) fetchChunk(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, f *os.File, start, end int64, onBytes func(int64)) error {
 	var resp *http.Response
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -544,6 +619,9 @@ func (e *Engine) fetchChunk(ctx context.Context, pl *ratelimit.PlatformLimiter, 
 				return err
 			}
 			offset += int64(n)
+			if onBytes != nil {
+				onBytes(int64(n))
+			}
 		}
 		if readErr == io.EOF {
 			break
@@ -553,6 +631,19 @@ func (e *Engine) fetchChunk(ctx context.Context, pl *ratelimit.PlatformLimiter, 
 		}
 	}
 	return nil
+}
+
+type progressWriter struct {
+	w       io.Writer
+	onWrite func(int64)
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	if n > 0 && p.onWrite != nil {
+		p.onWrite(int64(n))
+	}
+	return n, err
 }
 
 func copyHeaders(req *http.Request, h http.Header) {

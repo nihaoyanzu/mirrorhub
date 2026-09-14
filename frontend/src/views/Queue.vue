@@ -38,6 +38,15 @@ async function cancel(id: string) {
   }
 }
 
+async function cancelMany(ids: string[]) {
+  try {
+    await queueStore.cancelMany(ids)
+    toast.ok(t('queue.cancelledManyOk', { n: ids.length }))
+  } catch (e: any) {
+    toast.err(e.message || t('queue.cancelFailed'))
+  }
+}
+
 async function clearFinished() {
   try {
     const n = await queueStore.clearFinished()
@@ -76,6 +85,7 @@ async function clearFinished() {
         :show-priority="true"
         :empty-title="t('queue.queueIdle')"
         @cancel="cancel"
+        @cancel-many="cancelMany"
       />
     </section>
   </div>

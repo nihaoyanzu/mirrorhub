@@ -15,6 +15,25 @@ export function fmtRate(bps: number): string {
   return `${fmtBytes(bps)}/s`
 }
 
+/** 将毫秒格式化为可读时长（秒 / 分钟 / 小时 / 天） */
+export function fmtDurationMs(ms: number | null | undefined, locale?: string): string {
+  if (ms == null || Number.isNaN(Number(ms)) || ms < 0) return '-'
+  const n = Math.floor(Number(ms))
+  const zh = !locale || String(locale).toLowerCase().startsWith('zh')
+  const fmt = (v: number, zhUnit: string, enUnit: string) => {
+    const text = String(Math.max(1, Math.round(v)))
+    return zh ? `${text} ${zhUnit}` : `${text} ${enUnit}`
+  }
+  if (n < 1000) return zh ? `${n} 毫秒` : `${n} ms`
+  const sec = n / 1000
+  if (sec < 60) return fmt(sec, '秒', 's')
+  const min = sec / 60
+  if (min < 60) return fmt(min, '分钟', 'min')
+  const hr = min / 60
+  if (hr < 48) return fmt(hr, '小时', 'h')
+  return fmt(hr / 24, '天', 'd')
+}
+
 export function fmtTime(v: string | number | Date | null | undefined): string {
   if (v == null || v === '') return '-'
   // Go RFC3339Nano 小数位常超过 3 位，部分环境 Date 解析会失败

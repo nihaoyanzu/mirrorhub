@@ -11,6 +11,29 @@ import type {
   SystemStats,
 } from '@/types/api'
 
+export interface NetworkHint {
+  url: string
+  ip: string
+  iface: string
+}
+
+export interface NetworkHintsResponse {
+  proxy_port: string
+  suggestions: NetworkHint[]
+  recommend_empty?: boolean
+}
+
+export interface PublicGuideModule {
+  id: string
+  enabled: boolean
+}
+
+export interface PublicGuide {
+  proxy_port: string
+  addresses: NetworkHint[]
+  modules: PublicGuideModule[]
+}
+
 const TOKEN_KEY = 'mirrorhub_session'
 
 export function getToken(): string {
@@ -57,6 +80,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
+  getPublicGuide: () => request<PublicGuide>('/api/v1/public/guide'),
   logout: () => request<{ ok: boolean }>('/api/v1/logout', { method: 'POST' }),
   me: () => request<MeResponse>('/api/v1/me'),
   changePassword: (oldPassword: string, newPassword: string) =>
@@ -65,6 +89,7 @@ export const api = {
       body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
     }),
   getConfig: () => request<AppConfig>('/api/v1/config'),
+  getNetworkHints: () => request<NetworkHintsResponse>('/api/v1/network/hints'),
   putConfig: (body: unknown) =>
     request<void>('/api/v1/config', { method: 'PUT', body: JSON.stringify(body) }),
   testAccess: (body: unknown) =>

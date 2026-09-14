@@ -26,7 +26,7 @@ const navGroups = computed(() => [
     label: t('nav.overview'),
     highlight: false,
     links: [
-      { to: '/', icon: 'dash', text: t('nav.dashboard') },
+      { to: '/dashboard', icon: 'dash', text: t('nav.dashboard') },
       { to: '/access', icon: 'access', text: t('nav.access') },
     ],
   },
@@ -45,7 +45,10 @@ const navGroups = computed(() => [
     id: 'system',
     label: t('nav.system'),
     highlight: false,
-    links: [{ to: '/settings', icon: 'sys', text: t('nav.settings') }],
+    links: [
+      { to: '/settings', icon: 'sys', text: t('nav.settings') },
+      { to: '/', icon: 'guide', text: t('nav.guide') },
+    ],
   },
 ])
 
@@ -176,6 +179,7 @@ function goAccount() {
             <path v-else-if="link.icon === 'pf'" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12l-6-3-6 3V4z" />
             <path v-else-if="link.icon === 'plat'" d="M10 2a8 8 0 100 16 8 8 0 000-16zm-1 4h2v4l3 2-1 1.5L9 11V6z" />
             <path v-else-if="link.icon === 'sys'" d="M5 4a2 2 0 012-2h6a2 2 0 012 2v1h1a1 1 0 011 1v2a1 1 0 01-1 1h-1v6a2 2 0 01-2 2H7a2 2 0 01-2-2v-6H4a1 1 0 01-1-1V6a1 1 0 011-1h1V4zm2 0v1h6V4H7zm0 10h6v-6H7v6z" />
+            <path v-else-if="link.icon === 'guide'" d="M4 3a1 1 0 011-1h5a1 1 0 011 1v14H5a1 1 0 01-1-1V3zm8 0a1 1 0 011-1h2a2 2 0 012 2v11a1 1 0 01-1 1h-4V3zm-6 3h3v1.5H6V6zm0 3h3v1.5H6V9z" />
             <circle v-else cx="10" cy="10" r="3" />
           </svg>
           {{ link.text }}

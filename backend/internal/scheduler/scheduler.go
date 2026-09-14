@@ -3,6 +3,8 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/livehl/mirrorhub/internal/config"
+	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
 	"github.com/livehl/mirrorhub/internal/ratelimit"
 )
@@ -39,6 +42,8 @@ type TaskInfo struct {
 	ID        string    `json:"id"`
 	Platform  string    `json:"platform"`
 	URL       string    `json:"url"`
+	Label     string    `json:"label"`
+	Detail    string    `json:"detail,omitempty"`
 	Priority  string    `json:"priority"`
 	Boosted   bool      `json:"boosted"`
 	Status    string    `json:"status"`
@@ -47,11 +52,14 @@ type TaskInfo struct {
 	StartedAt time.Time `json:"started_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 	WaitMs    int64     `json:"wait_ms"`
+	BytesDone int64     `json:"bytes_done"`
+	BytesTotal int64    `json:"bytes_total"`
 	Error     string    `json:"error,omitempty"`
 
 	// countsActive 表示 Begin 时是否计入 p0Active（仅 P0 交互）。
 	// 暂停时把运行中 P2 改标为 P1 不改此标记，避免 End 误减。
 	countsActive bool
+	lastProgAt   time.Time
 }
 
 type Scheduler struct {
@@ -61,9 +69,8 @@ type Scheduler struct {
 	limiters     *ratelimit.Registry
 	cfgFn        func() config.SchedulerConfig
 	log          *zap.Logger
-	p0Active     atomic.Int64
-	nextID       atomic.Uint64
-	resumeCount  atomic.Int64
+	p0Active atomic.Int64
+	nextID   atomic.Uint64
 }
 
 func New(lim *ratelimit.Registry, cfgFn func() config.SchedulerConfig, log *zap.Logger) *Scheduler {
@@ -88,16 +95,18 @@ func (s *Scheduler) Begin(platform, rawURL string, prio Priority, boost bool) st
 		if pl := s.limiters.Get(platform); pl != nil && pl.PrefetchPaused() {
 			prio = PriorityResume
 			prioLabel = PriorityResume.String()
-			s.resumeCount.Add(1)
 		}
 	}
 	// 仅真实交互（P0）计入 p0Active。
 	// 若把 P1 Resume 也算进去，暂停期间入队的预取会顶住 p0Active，导致永远无法 resumeOnIdle。
 	countsActive := prio == PriorityInteractive
+	label, detail := taskDisplay(rawURL)
 	info := &TaskInfo{
 		ID:           id,
 		Platform:     platform,
 		URL:          rawURL,
+		Label:        label,
+		Detail:       detail,
 		Priority:     prioLabel,
 		Boosted:      boost,
 		Status:       "queued",
@@ -143,6 +152,63 @@ func (s *Scheduler) MarkRunning(id string) {
 	t.UpdatedAt = now
 	t.WaitMs = now.Sub(t.QueuedAt).Milliseconds()
 	s.refreshTaskMetricsLocked()
+}
+
+// UpdateProgress 更新下载进度（节流，避免高频锁竞争）。
+func (s *Scheduler) UpdateProgress(id string, done, total int64) {
+	if done < 0 {
+		done = 0
+	}
+	if total < 0 {
+		total = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok || t == nil {
+		return
+	}
+	if t.Status != "queued" && t.Status != "running" {
+		return
+	}
+	now := time.Now()
+	force := total != t.BytesTotal || done >= total && total > 0 || done < t.BytesDone
+	if !force && !t.lastProgAt.IsZero() && now.Sub(t.lastProgAt) < 200*time.Millisecond {
+		delta := done - t.BytesDone
+		if delta >= 0 && delta < 256*1024 {
+			return
+		}
+	}
+	t.BytesDone = done
+	t.BytesTotal = total
+	t.UpdatedAt = now
+	t.lastProgAt = now
+}
+
+func taskDisplay(rawURL string) (label, detail string) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "-", ""
+	}
+	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+		info := pypihandler.ParseArtifactURL(rawURL, "package")
+		if info.Name != "" && info.Version != "" {
+			return info.Name + " " + info.Version, info.Filename
+		}
+		if info.Filename != "" {
+			return info.Filename, ""
+		}
+		if info.Name != "" {
+			return info.Name, ""
+		}
+		if u, err := url.Parse(rawURL); err == nil {
+			if base := path.Base(u.Path); base != "" && base != "/" && base != "." {
+				return base, ""
+			}
+		}
+	}
+	// 包规格（如 requests>=2）或解析失败项
+	return rawURL, ""
 }
 
 func (s *Scheduler) trimOrderLocked() {
@@ -256,7 +322,6 @@ func (s *Scheduler) pausePrefetchIfNeeded(platform string) {
 		for _, t := range s.tasks {
 			if t.Status == "running" && t.Priority == PriorityPrefetch.String() {
 				t.Priority = PriorityResume.String()
-				s.resumeCount.Add(1)
 			}
 		}
 		s.mu.Unlock()
@@ -285,8 +350,23 @@ func (s *Scheduler) InteractiveActive() int64 {
 	return s.p0Active.Load()
 }
 
+// ResumeCount 当前仍活跃（queued/running）的 P1 恢复任务数，非历史累计。
 func (s *Scheduler) ResumeCount() int64 {
-	return s.resumeCount.Load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for _, t := range s.tasks {
+		if t == nil {
+			continue
+		}
+		if t.Priority != PriorityResume.String() {
+			continue
+		}
+		if t.Status == "queued" || t.Status == "running" {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *Scheduler) List() []TaskInfo {

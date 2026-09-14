@@ -3,9 +3,9 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import type { NetworkHint } from '@/api/client'
 import { useSessionStore } from '@/stores/session'
 import { useToastStore } from '@/stores/toast'
-import type { AppConfig } from '@/types/api'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -17,9 +17,12 @@ const saving = ref(false)
 const dirty = ref(false)
 const pwdSaving = ref(false)
 const tab = ref<'network' | 'rate' | 'concurrency' | 'account'>('network')
+const hostHints = ref<NetworkHint[]>([])
+const localAddrsText = computed(() =>
+  hostHints.value.map((h) => h.url.replace(/^https?:\/\//i, '')).join('\n'),
+)
 
 const form = reactive({
-  public_host: '',
   upstream_proxy: '',
   bandwidth_mbps: 0,
   max_concurrent: 20,
@@ -116,8 +119,11 @@ function applyPreset(kind: 'off' | 'always' | 'work_limit' | 'offwork_limit') {
 async function load() {
   loading.value = true
   try {
-    const cfg: AppConfig = await api.getConfig()
-    form.public_host = cfg.server?.public_host || ''
+    const [cfg, hints] = await Promise.all([
+      api.getConfig(),
+      api.getNetworkHints().catch(() => ({ suggestions: [] as NetworkHint[] })),
+    ])
+    hostHints.value = hints.suggestions || []
     form.upstream_proxy = cfg.server?.upstream_proxy || ''
     const rl = cfg.rate_limit
     form.bandwidth_mbps = rl?.bandwidth_mbps ?? 0
@@ -159,7 +165,8 @@ async function save() {
   try {
     if (tab.value === 'network') {
       await api.putConfig({
-        public_host: form.public_host,
+        // 索引改写按请求 Host 自动生成，本机地址仅展示
+        public_host: '',
         upstream_proxy: form.upstream_proxy,
       })
     } else if (tab.value === 'rate' || tab.value === 'concurrency') {
@@ -285,19 +292,13 @@ onMounted(() => {
     >
       <form class="grid gap-4 sm:grid-cols-2" autocomplete="off" @submit.prevent>
         <div>
-          <label class="ui-label">{{ t('system.publicHost') }}</label>
-          <input
-            v-model="form.public_host"
-            class="ui-input"
-            name="mirrorhub-public-host"
-            type="text"
-            inputmode="url"
-            autocomplete="off"
-            data-1p-ignore
-            data-lpignore="true"
-            :placeholder="t('system.publicHostPlaceholder')"
+          <label class="ui-label">{{ t('system.localAddresses') }}</label>
+          <textarea
+            class="ui-input font-mono text-sm"
+            :rows="Math.max(3, hostHints.length || 1)"
+            readonly
+            :value="localAddrsText || t('system.localAddressesEmpty')"
           />
-          <p class="mt-1.5 text-xs text-muted">{{ t('system.publicHostHint') }}</p>
         </div>
         <div>
           <label class="ui-label">{{ t('system.upstreamProxy') }}</label>

@@ -86,6 +86,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	strategy := string(m.Strategy)
 	taskID := s.sched.Begin(m.Platform, m.TargetURL, prio, boost)
 	onAcquired := func() { s.sched.MarkRunning(taskID) }
+	onProgress := func(done, total int64) { s.sched.UpdateProgress(taskID, done, total) }
 	var taskErr error
 	cacheLabel := "na"
 	defer func() {
@@ -121,7 +122,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		strategy = "metadata"
 		cacheLabel, taskErr = s.handleMetadata(cw, r, m, cfg, pcfg, prio == scheduler.PriorityPrefetch, boost, onAcquired)
 	case m.Strategy == router.StrategyParallel:
-		cacheLabel, strategy, taskErr = s.handlePackage(cw, r, m, cfg, pcfg, prio == scheduler.PriorityPrefetch, boost, onAcquired)
+		cacheLabel, strategy, taskErr = s.handlePackage(cw, r, m, cfg, pcfg, prio == scheduler.PriorityPrefetch, boost, onAcquired, onProgress)
 	default:
 		http.Error(cw, "unknown strategy", http.StatusInternalServerError)
 	}

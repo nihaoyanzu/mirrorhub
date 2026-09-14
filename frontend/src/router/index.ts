@@ -6,13 +6,19 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: '/',
+      name: 'guide',
+      component: () => import('@/views/Guide.vue'),
+      meta: { public: true, titleKey: 'guide.title' },
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/Login.vue'),
       meta: { public: true, titleKey: 'login.loginBtn' },
     },
     {
-      path: '/',
+      path: '/dashboard',
       name: 'dashboard',
       component: () => import('@/views/Dashboard.vue'),
       meta: { titleKey: 'dashboard.title' },

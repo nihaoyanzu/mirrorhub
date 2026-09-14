@@ -28,6 +28,14 @@ export const useQueueStore = defineStore('queue', () => {
     await load(true)
   }
 
+  async function cancelMany(ids: string[]) {
+    const uniq = [...new Set(ids.filter(Boolean))]
+    for (const id of uniq) {
+      await api.cancelPrefetch(id)
+    }
+    await load(true)
+  }
+
   async function clearFinished() {
     const res = await api.clearQueue()
     await load(true)
@@ -50,5 +58,16 @@ export const useQueueStore = defineStore('queue', () => {
     }
   }
 
-  return { tasks, loading, auto, runningCount, load, cancel, clearFinished, startPolling, stopPolling }
+  return {
+    tasks,
+    loading,
+    auto,
+    runningCount,
+    load,
+    cancel,
+    cancelMany,
+    clearFinished,
+    startPolling,
+    stopPolling,
+  }
 })

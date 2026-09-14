@@ -15,7 +15,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/router"
 )
 
-func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router.Match, cfg config.Config, pypi config.PlatformConfig, prefetch, boost bool, onAcquired func()) (string, string, error) {
+func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router.Match, cfg config.Config, pypi config.PlatformConfig, prefetch, boost bool, onAcquired func(), onProgress func(done, total int64)) (string, string, error) {
 	origURL := m.TargetURL
 	headers := platform.FilterRequestHeaders(r.Header)
 	cacheKey := cache.KeyFromURL(origURL)
@@ -23,6 +23,9 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 	if entry, ok := s.cache.Get(cacheKey); ok {
 		if onAcquired != nil {
 			onAcquired()
+		}
+		if onProgress != nil {
+			onProgress(entry.Size, entry.Size)
 		}
 		etag := entry.ETag
 		if etag == "" && entry.Digest != "" {
@@ -142,6 +145,7 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 		ExpectedSHA256: downloader.LookupDigest(origURL),
 		RangeHeader:    r.Header.Get("Range"),
 		OnAcquired:     onAcquired,
+		OnProgress:     onProgress,
 	}
 
 	if !prefetch {

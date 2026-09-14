@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -81,6 +82,9 @@ func (e *Engine) streamParallelToClient(ctx context.Context, w http.ResponseWrit
 	fillCtx, fillCancel := context.WithCancel(ctx)
 	defer fillCancel()
 
+	var downloaded atomic.Int64
+	notifyProgress(opt, 0, size)
+
 	g, gctx := errgroup.WithContext(fillCtx)
 	g.SetLimit(concurrency)
 	for _, ch := range chunks {
@@ -92,7 +96,15 @@ func (e *Engine) streamParallelToClient(ctx context.Context, w http.ResponseWrit
 			defer pl.ReleaseConn()
 			var lastErr error
 			for attempt := 0; attempt < 3; attempt++ {
-				if err := e.fetchChunk(gctx, pl, opt, f, ch.start, ch.end); err != nil {
+				var got int64
+				err := e.fetchChunk(gctx, pl, opt, f, ch.start, ch.end, func(n int64) {
+					got += n
+					notifyProgress(opt, downloaded.Add(n), size)
+				})
+				if err != nil {
+					if got > 0 {
+						notifyProgress(opt, downloaded.Add(-got), size)
+					}
 					lastErr = err
 					select {
 					case <-gctx.Done():

@@ -83,6 +83,7 @@ func (s *Server) Routes() http.Handler {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/login", s.login)
+		r.Get("/public/guide", s.getPublicGuide)
 		r.Group(func(r chi.Router) {
 			r.Use(s.authRequired)
 			r.Post("/logout", s.logout)
@@ -91,6 +92,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/config", s.getConfig)
 			r.Put("/config", s.putConfig)
 			r.Post("/config/test", s.postAccessTest)
+			r.Get("/network/hints", s.getNetworkHints)
 			r.Get("/stats", s.getStats)
 			r.Get("/queue", s.getQueue)
 			r.Delete("/queue", s.clearQueue)

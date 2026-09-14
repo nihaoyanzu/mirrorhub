@@ -399,6 +399,7 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 			Kind:           "package",
 			ExpectedSHA256: downloader.LookupDigest(rawURL),
 			OnAcquired:     func() { s.sched.MarkRunning(taskID) },
+			OnProgress:     func(done, total int64) { s.sched.UpdateProgress(taskID, done, total) },
 		})
 		s.sched.End(taskID, err)
 		if err != nil && !strings.Contains(err.Error(), "context canceled") {
