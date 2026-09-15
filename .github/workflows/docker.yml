@@ -51,8 +51,11 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            # v1.2 不是完整 SemVer（缺 patch），仍发布 1.2 / 1.2.0 风格短标签
+            type=match,pattern=^v(\d+\.\d+(?:\.\d+)?)$,group=1
             type=sha,prefix=
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
