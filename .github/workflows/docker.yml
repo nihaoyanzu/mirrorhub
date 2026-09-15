@@ -15,6 +15,11 @@ permissions:
 env:
   REGISTRY: ghcr.io
 
+# 避免 main 与 tag 并发推送导致 latest / 版本号 / sha 落在不同 digest
+concurrency:
+  group: docker-ghcr
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -50,11 +55,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            # latest 只跟 release tag，避免与 main 并发推送后和版本号 digest 错位
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # v1.2 不是完整 SemVer（缺 patch），仍发布 1.2 / 1.2.0 风格短标签
+            # v1.2 不是完整 SemVer（缺 patch），仍发布 1.2 风格短标签
             type=match,pattern=^v(\d+\.\d+(?:\.\d+)?)$,group=1
             type=sha,prefix=
           labels: |
