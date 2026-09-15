@@ -24,7 +24,6 @@ type Bootstrap struct {
 
 // RuntimeSettings 存运营库，由管理页维护
 type RuntimeSettings struct {
-	PublicHost    string                    `json:"public_host"`
 	UpstreamProxy string                    `json:"upstream_proxy"`
 	Cache         CacheConfig               `json:"cache"`
 	RateLimit     RateLimitConfig           `json:"rate_limit"`
@@ -45,7 +44,8 @@ type ServerConfig struct {
 	ProxyAddr     string `json:"proxy_addr"`
 	AdminAddr     string `json:"admin_addr"`
 	UpstreamProxy string `json:"upstream_proxy"`
-	PublicHost    string `json:"public_host"`
+	// PublicHost 仅请求期内由代理按访问 Host 填入，用于索引改写；不持久化、不对外暴露。
+	PublicHost string `json:"-"`
 }
 
 type CacheConfig struct {
@@ -57,9 +57,8 @@ type CacheConfig struct {
 }
 
 type SchedulerConfig struct {
-	InteractivePriority bool                 `json:"interactive_priority"`
-	Prefetch            PrefetchConfig       `json:"prefetch"`
-	SmallFileBoost      SmallFileBoostConfig `json:"small_file_boost"`
+	Prefetch       PrefetchConfig       `json:"prefetch"`
+	SmallFileBoost SmallFileBoostConfig `json:"small_file_boost"`
 }
 
 type PrefetchConfig struct {
@@ -271,7 +270,6 @@ func (m *Manager) persistLocked() error {
 		platforms[name] = p
 	}
 	rt := RuntimeSettings{
-		PublicHost:    m.cfg.Server.PublicHost,
 		UpstreamProxy: m.cfg.Server.UpstreamProxy,
 		Cache: CacheConfig{
 			MaxSizeGB:         m.cfg.Cache.MaxSizeGB,
@@ -295,7 +293,6 @@ func merge(boot Bootstrap, rt RuntimeSettings) Config {
 			ProxyAddr:     boot.ProxyAddr,
 			AdminAddr:     boot.AdminAddr,
 			UpstreamProxy: rt.UpstreamProxy,
-			PublicHost:    rt.PublicHost,
 		},
 		Cache: CacheConfig{
 			Dir:               cacheDir,
@@ -314,7 +311,6 @@ func merge(boot Bootstrap, rt RuntimeSettings) Config {
 
 func defaultRuntime() RuntimeSettings {
 	return RuntimeSettings{
-		PublicHost:    "", // 空=按客户端请求 Host 自动改写索引链接
 		UpstreamProxy: "",
 		Cache: CacheConfig{
 			MaxSizeGB:         100,
@@ -323,7 +319,6 @@ func defaultRuntime() RuntimeSettings {
 			ChunkTTLHours:     48,
 		},
 		Scheduler: SchedulerConfig{
-			InteractivePriority: true,
 			Prefetch: PrefetchConfig{
 				IdleQuotaRatio: 0.3,
 				OnInteractive:  "pause",

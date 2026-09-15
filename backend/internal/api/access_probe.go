@@ -17,7 +17,6 @@ import (
 )
 
 type accessTestReq struct {
-	PublicHost       *string `json:"public_host"`
 	UpstreamProxy    *string `json:"upstream_proxy"`
 	Upstream         *string `json:"upstream"`
 	FileUpstream     *string `json:"file_upstream"`
@@ -43,10 +42,6 @@ func (s *Server) postAccessTest(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Get()
 	pypi := cfg.Platforms["pypi"]
 
-	publicHost := cfg.Server.PublicHost
-	if body.PublicHost != nil {
-		publicHost = *body.PublicHost
-	}
 	upstreamProxy := cfg.Server.UpstreamProxy
 	if body.UpstreamProxy != nil {
 		upstreamProxy = *body.UpstreamProxy
@@ -62,18 +57,6 @@ func (s *Server) postAccessTest(w http.ResponseWriter, r *http.Request) {
 	metaUpstream := pypi.MetadataUpstream
 	if body.MetadataUpstream != nil {
 		metaUpstream = *body.MetadataUpstream
-	}
-
-	if err := validatePublicHost(publicHost); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": false,
-			"checks": []accessTestCheck{{
-				Name:   "public_host",
-				OK:     false,
-				Detail: err.Error(),
-			}},
-		})
-		return
 	}
 
 	client := newAccessProbeClient(strings.TrimSpace(upstreamProxy), 12*time.Second)
@@ -221,65 +204,6 @@ func (s *Server) postAccessTest(w http.ResponseWriter, r *http.Request) {
 			Name: "upstream_proxy", OK: okUp, MS: 0,
 			Detail: fmt.Sprintf("经由 %s（与索引探测共用）", strings.TrimSpace(upstreamProxy)),
 		})
-	}
-
-	// 5) 对外入口（下游 / public_host）
-	{
-		base := strings.TrimSpace(publicHost)
-		if base == "" {
-			checks = append(checks, accessTestCheck{
-				Name: "public_host", OK: true, Skipped: true, MS: 0,
-				Detail: "未配置对外地址，跳过代理入口探测",
-			})
-		} else {
-			pubBase := pypihandler.PublicBaseURL(cfg)
-			// 用草稿 public_host 覆盖
-			tmp := cfg
-			tmp.Server.PublicHost = publicHost
-			pubBase = pypihandler.PublicBaseURL(tmp)
-
-			direct := newAccessProbeClient("", 8*time.Second) // 下游不走上游代理
-			t0 := time.Now()
-			healthURL := strings.TrimRight(pubBase, "/") + "/health"
-			status, _, err := probeGET(ctx, direct, healthURL, 4<<10)
-			ms := time.Since(t0).Milliseconds()
-			if err != nil {
-				checks = append(checks, accessTestCheck{
-					Name: "public_host", OK: false, MS: ms,
-					Detail: fmt.Sprintf("%s: %v（请确认指向代理端口，如 127.0.0.1:18081）", healthURL, err),
-				})
-			} else if status >= 400 {
-				checks = append(checks, accessTestCheck{
-					Name: "public_host", OK: false, MS: ms,
-					Detail: fmt.Sprintf("%s → HTTP %d", healthURL, status),
-				})
-			} else {
-				// 再打一枪 simple，确认代理链路
-				t1 := time.Now()
-				simpleURL := strings.TrimRight(pubBase, "/") + "/simple/pip/"
-				st2, body2, err2 := probeGET(ctx, direct, simpleURL, 256<<10)
-				ms2 := time.Since(t1).Milliseconds()
-				if err2 != nil {
-					checks = append(checks, accessTestCheck{
-						Name: "public_host", OK: false, MS: ms + ms2,
-						Detail: fmt.Sprintf("health 正常，但 %s: %v", simpleURL, err2),
-					})
-				} else if st2 >= 400 {
-					checks = append(checks, accessTestCheck{
-						Name: "public_host", OK: false, MS: ms + ms2,
-						Detail: fmt.Sprintf("health 正常，但 %s → HTTP %d", simpleURL, st2),
-					})
-				} else {
-					detail := fmt.Sprintf("health + %s → HTTP %d", simpleURL, st2)
-					if len(body2) > 0 && strings.Contains(string(body2), "files.pythonhosted.org") {
-						detail += "（索引仍含 files.pythonhosted.org，请检查改写 Host）"
-					}
-					checks = append(checks, accessTestCheck{
-						Name: "public_host", OK: true, MS: ms + ms2, Detail: detail,
-					})
-				}
-			}
-		}
 	}
 
 	allOK := true

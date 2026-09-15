@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -92,7 +91,6 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/config", s.getConfig)
 			r.Put("/config", s.putConfig)
 			r.Post("/config/test", s.postAccessTest)
-			r.Get("/network/hints", s.getNetworkHints)
 			r.Get("/stats", s.getStats)
 			r.Get("/queue", s.getQueue)
 			r.Delete("/queue", s.clearQueue)
@@ -237,7 +235,6 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 type configUpdate struct {
-	PublicHost    *string                          `json:"public_host"`
 	UpstreamProxy *string                          `json:"upstream_proxy"`
 	Cache         *config.CacheConfig              `json:"cache"`
 	RateLimit     *config.RateLimitConfig          `json:"rate_limit"`
@@ -252,16 +249,7 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prevUpstream := s.catalogRootURL()
-	if body.PublicHost != nil {
-		if err := validatePublicHost(*body.PublicHost); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
 	err := s.cfg.Update(func(c *config.Config) {
-		if body.PublicHost != nil {
-			c.Server.PublicHost = *body.PublicHost
-		}
 		if body.UpstreamProxy != nil {
 			c.Server.UpstreamProxy = *body.UpstreamProxy
 		}
@@ -408,19 +396,4 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// validatePublicHost 拒绝明显指向前端开发服务器的 PublicHost。
-func validatePublicHost(host string) error {
-	h := strings.ToLower(strings.TrimSpace(host))
-	if h == "" {
-		return nil
-	}
-	devPorts := []string{":5173", ":5174", ":3000", ":4173"}
-	for _, p := range devPorts {
-		if strings.Contains(h, p) {
-			return fmt.Errorf("public_host 不能使用前端开发端口（%s），请填写代理对外地址如 127.0.0.1:18081", p)
-		}
-	}
-	return nil
 }

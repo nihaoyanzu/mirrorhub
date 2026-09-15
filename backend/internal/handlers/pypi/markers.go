@@ -30,9 +30,9 @@ func ParseRequiresDist(meta []byte) []string {
 }
 
 // TargetEnv 组织目标环境（非网关本机），用于评估依赖 marker。
-// Python 为组织最低版本；评估时对 [Python, 3.13] 做并集。
+// Python 为精确版本列表；marker 对列表中任一版本为真即纳入。
 type TargetEnv struct {
-	Python   []string // ["3.10", "3.12"]，EvalMarker 对任一版本满足即纳入
+	Python   []string // 如 ["3.10", "3.12"]
 	Platform string   // linux / win32 / darwin
 }
 
@@ -46,7 +46,7 @@ func SplitReqMarker(raw string) (reqPart, marker string) {
 }
 
 // EvalMarker 评估精简 PEP 508 marker；不支持的复杂表达式偏保守返回 true（尽量预热）。
-// 对 python_version：在 [env.Python, 3.13] 任一版本为真即纳入。
+// 对 python_version：仅按配置的精确版本列表评估（任一命中即纳入）。
 func EvalMarker(marker string, env TargetEnv) bool {
 	marker = strings.TrimSpace(marker)
 	if marker == "" {
@@ -62,7 +62,7 @@ func EvalMarker(marker string, env TargetEnv) bool {
 	plat := normalizePlat(env.Platform)
 	versions := env.Python
 	if len(versions) == 0 {
-		versions = []string{"3.9"}
+		versions = []string{"3.10", "3.11", "3.12"}
 	}
 	for _, py := range versions {
 		if evalMarkerForPython(marker, py, plat) {

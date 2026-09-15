@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
 import StatTile from '@/components/StatTile.vue'
@@ -11,8 +11,6 @@ import { fmtBytes, fmtRate, hitRate } from '@/lib/format'
 const { t } = useI18n()
 const statsStore = useStatsStore()
 const stats = computed(() => statsStore.data)
-
-onUnmounted(() => statsStore.stopPolling())
 
 const upstreamBps = computed(() => fmtRate(Number(stats.value?.traffic?.upstream_bps ?? 0)))
 const downstreamBps = computed(() => fmtRate(Number(stats.value?.traffic?.downstream_bps ?? 0)))

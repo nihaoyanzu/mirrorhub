@@ -23,20 +23,21 @@ import (
 )
 
 type Options struct {
-	URL           string // 实际上游 GET/Range 地址（可为重定向后 URL）
-	SourceURL     string // 写入缓存的稳定源 URL；空则用 URL
-	CacheKey      string // 必须基于重定向前的路径 URL，勿随 302 变化
-	ContentType   string
-	Concurrency   int
-	ChunkSize     int64
-	MinSize       int64  // 并行流式阈值；0 则用默认 100KiB
-	TTLSeconds    int
-	Platform      string
-	Prefetch      bool
-	Boost         bool // 小文件插队槽
-	Headers       http.Header
-	ChunkTTLHours int
-	Kind          string // package | metadata，默认 package
+	URL            string // 实际上游 GET/Range 地址（可为重定向后 URL）
+	SourceURL      string // 写入缓存的稳定源 URL；空则用 URL
+	CacheKey       string // 必须基于重定向前的路径 URL，勿随 302 变化
+	ContentType    string
+	Concurrency    int
+	ChunkSize      int64
+	MinSize        int64 // 并行流式阈值；0 则用默认 100KiB
+	TTLSeconds     int
+	Platform       string
+	Prefetch       bool
+	Boost          bool   // 小文件插队槽
+	TaskID         string // 调度器任务 id；预取门闩（P0 pause / P1>P2）用
+	Headers        http.Header
+	ChunkTTLHours  int
+	Kind           string // package | metadata，默认 package
 	ExpectedSHA256 string // 期望内容摘要（无则跳过校验）
 	// KnownSize：>=0 使用该大小并跳过 HEAD；-1 表示未知长度走串行；未设置时用 HasKnownSize=false
 	HasKnownSize bool
@@ -57,14 +58,15 @@ type Result struct {
 }
 
 type Engine struct {
-	cache      *cache.Manager
-	limiters   *ratelimit.Registry
-	client     *http.Client
-	headClient *http.Client // HEAD 专用：不复用连接，避免连接池卡死
-	log        *zap.Logger
-	idleRatio  func() float64
-	traffic    *traffic.Recorder
-	inflight   sync.Map // cacheKey -> *inflightWait
+	cache        *cache.Manager
+	limiters     *ratelimit.Registry
+	client       *http.Client
+	headClient   *http.Client // HEAD 专用：不复用连接，避免连接池卡死
+	log          *zap.Logger
+	idleRatio    func() float64
+	traffic      *traffic.Recorder
+	inflight     sync.Map // cacheKey -> *inflightWait
+	prefetchGate func(taskID string) bool // 可选：P1>P2 等调度门闩
 }
 
 type inflightMode int
@@ -134,6 +136,11 @@ func New(c *cache.Manager, lim *ratelimit.Registry, upstreamProxy string, log *z
 	}
 }
 
+// SetPrefetchGate 注入预取调度门闩（如 scheduler.PrefetchMayRun）：有活跃 P1 时挡住普通 P2。
+func (e *Engine) SetPrefetchGate(fn func(taskID string) bool) {
+	e.prefetchGate = fn
+}
+
 // SetUpstreamProxy 热更新出站代理；空字符串表示直连（不走环境变量代理）。
 func (e *Engine) SetUpstreamProxy(proxyURL string) {
 	apply := func(tr *http.Transport) {
@@ -197,7 +204,7 @@ func (e *Engine) GetOrDownload(ctx context.Context, opt Options) (*Result, error
 		var pl *ratelimit.PlatformLimiter
 		if opt.Prefetch {
 			pl = e.limiters.Get(opt.Platform)
-			if err := acquireTaskSlot(ctx, pl, true, opt.Boost); err != nil {
+			if err := e.acquireTaskSlot(ctx, pl, opt); err != nil {
 				return nil, err
 			}
 			defer pl.ReleaseTask(opt.Boost)
@@ -255,7 +262,7 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 	if pl == nil {
 		return nil, fmt.Errorf("no rate limiter for platform %s", opt.Platform)
 	}
-	if err := acquireTaskSlot(ctx, pl, opt.Prefetch, opt.Boost); err != nil {
+	if err := e.acquireTaskSlot(ctx, pl, opt); err != nil {
 		return nil, err
 	}
 	defer pl.ReleaseTask(opt.Boost)
@@ -349,7 +356,7 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 			continue
 		}
 		g.Go(func() error {
-			if err := waitPrefetch(gctx, pl, opt.Prefetch); err != nil {
+			if err := e.waitPrefetchGate(gctx, pl, opt); err != nil {
 				return err
 			}
 			if err := pl.AcquireConn(gctx, !opt.Prefetch); err != nil {
@@ -460,6 +467,7 @@ func (e *Engine) downloadSerial(ctx context.Context, pl *ratelimit.PlatformLimit
 		prefetch: opt.Prefetch,
 		idle:     idle,
 		traffic:  e.traffic,
+		allow:    e.prefetchAllow(opt),
 	}
 	total := resp.ContentLength
 	if total > 0 {
@@ -502,39 +510,53 @@ func (e *Engine) downloadSerial(ctx context.Context, pl *ratelimit.PlatformLimit
 	return &Result{Entry: entry, ContentType: ct, Size: n, FromCache: false, Strategy: strategy}, nil
 }
 
-func waitPrefetch(ctx context.Context, pl *ratelimit.PlatformLimiter, prefetch bool) error {
-	if !prefetch || pl == nil {
+func (e *Engine) prefetchAllow(opt Options) func() bool {
+	if !opt.Prefetch || e.prefetchGate == nil || opt.TaskID == "" {
 		return nil
 	}
-	for pl.PrefetchPaused() {
+	taskID := opt.TaskID
+	gate := e.prefetchGate
+	return func() bool { return gate(taskID) }
+}
+
+// waitPrefetchGate：P0 交互 pause 时挡住全部预取；pause 解除后普通 P2 还要给活跃 P1 让路。
+func (e *Engine) waitPrefetchGate(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options) error {
+	if !opt.Prefetch || pl == nil {
+		return nil
+	}
+	allow := e.prefetchAllow(opt)
+	for {
+		if !pl.PrefetchPaused() && (allow == nil || allow()) {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return nil
 }
 
-// acquireTaskSlot 获取任务槽；预取在 pause 期间不占槽，避免暂停间隙继续开跑、冲破并发体感。
-func acquireTaskSlot(ctx context.Context, pl *ratelimit.PlatformLimiter, prefetch, boost bool) error {
+// acquireTaskSlot 获取任务槽；预取在 pause / 让路期间不占槽，避免暂停间隙继续开跑、冲破并发体感。
+func (e *Engine) acquireTaskSlot(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options) error {
 	if pl == nil {
 		return fmt.Errorf("no rate limiter")
 	}
-	if !prefetch {
-		return pl.AcquireTask(ctx, boost)
+	if !opt.Prefetch {
+		return pl.AcquireTask(ctx, opt.Boost)
 	}
 	for {
-		if err := waitPrefetch(ctx, pl, true); err != nil {
+		if err := e.waitPrefetchGate(ctx, pl, opt); err != nil {
 			return err
 		}
-		if err := pl.AcquireTask(ctx, boost); err != nil {
+		if err := pl.AcquireTask(ctx, opt.Boost); err != nil {
 			return err
 		}
-		if !pl.PrefetchPaused() {
+		allow := e.prefetchAllow(opt)
+		if !pl.PrefetchPaused() && (allow == nil || allow()) {
 			return nil
 		}
-		pl.ReleaseTask(boost)
+		pl.ReleaseTask(opt.Boost)
 	}
 }
 
@@ -606,6 +628,9 @@ func (e *Engine) fetchChunk(ctx context.Context, pl *ratelimit.PlatformLimiter, 
 				idle = e.idleRatio()
 			}
 			if opt.Prefetch {
+				if err := e.waitPrefetchGate(ctx, pl, opt); err != nil {
+					return err
+				}
 				if err := pl.WaitPrefetch(ctx, n, idle); err != nil {
 					return err
 				}

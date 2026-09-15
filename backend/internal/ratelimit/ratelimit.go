@@ -19,17 +19,16 @@ const (
 )
 
 type PlatformLimiter struct {
-	name         string
-	bandwidth    *rate.Limiter // 预取桶
-	taskSem      chan struct{}
-	boostSem     chan struct{}
-	connSem      chan struct{}
-	connReserved int // 非交互最多占用 maxConn-reserved
-	mu           sync.Mutex
-	cfg          config.RateLimitConfig
-	activeTasks  int
-	activeBoost  int
-	activeConns  int
+	name           string
+	bandwidth      *rate.Limiter // 预取桶
+	connSem        chan struct{}
+	connReserved   int // 非交互最多占用 maxConn-reserved
+	maxBoost       int
+	mu             sync.Mutex
+	cfg            config.RateLimitConfig
+	activeTasks    int
+	activeBoost    int
+	activeConns    int
 	prefetchPaused bool
 	waitSamples    []float64 // 秒，滑动窗口
 }
@@ -79,6 +78,21 @@ func newPlatformLimiter(name string, cfg config.RateLimitConfig) *PlatformLimite
 	if maxConn <= 0 {
 		maxConn = 80
 	}
+	boostSlots := boostSlotsFor(maxTask)
+	reserved := connReservedFor(maxConn)
+	cfg.MaxConcurrent = maxTask
+	cfg.MaxConnections = maxConn
+	return &PlatformLimiter{
+		name:         name,
+		bandwidth:    lim,
+		connSem:      make(chan struct{}, maxConn),
+		cfg:          cfg,
+		connReserved: reserved,
+		maxBoost:     boostSlots,
+	}
+}
+
+func boostSlotsFor(maxTask int) int {
 	boostSlots := maxTask / 5
 	if boostSlots < 2 {
 		boostSlots = 2
@@ -86,7 +100,10 @@ func newPlatformLimiter(name string, cfg config.RateLimitConfig) *PlatformLimite
 	if boostSlots > maxTask {
 		boostSlots = maxTask
 	}
-	// 为交互预留连接，避免 P1/P2 占满后交互 MISS 饿死
+	return boostSlots
+}
+
+func connReservedFor(maxConn int) int {
 	reserved := maxConn / 10
 	if reserved < 8 {
 		reserved = 8
@@ -97,15 +114,26 @@ func newPlatformLimiter(name string, cfg config.RateLimitConfig) *PlatformLimite
 			reserved = 1
 		}
 	}
-	return &PlatformLimiter{
-		name:         name,
-		bandwidth:    lim,
-		taskSem:      make(chan struct{}, maxTask),
-		boostSem:     make(chan struct{}, boostSlots),
-		connSem:      make(chan struct{}, maxConn),
-		cfg:          cfg,
-		connReserved: reserved,
+	return reserved
+}
+
+// resizeSem 按已占用 held 重建信号量：held>cap 时槽位填满，新 Acquire 需等旧任务结束收窄。
+func resizeSem(held, capacity int) chan struct{} {
+	if capacity < 1 {
+		capacity = 1
 	}
+	ch := make(chan struct{}, capacity)
+	n := held
+	if n > capacity {
+		n = capacity
+	}
+	if n < 0 {
+		n = 0
+	}
+	for i := 0; i < n; i++ {
+		ch <- struct{}{}
+	}
+	return ch
 }
 
 func (r *Registry) Get(_ string) *PlatformLimiter {
@@ -114,17 +142,58 @@ func (r *Registry) Get(_ string) *PlatformLimiter {
 	return r.global
 }
 
+// Update 原地热更新。不可换新 limiter：否则旧任务仍占旧槽，新槽又放行一批（20→10 却跑到 ~30）。
 func (r *Registry) Update(cfg config.RateLimitConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	paused := false
-	if r.global != nil {
-		paused = r.global.PrefetchPaused()
+	if r.global == nil {
+		r.global = newPlatformLimiter("global", cfg)
+		return
 	}
-	r.global = newPlatformLimiter("global", cfg)
-	if paused {
-		r.global.prefetchPaused = true
+	r.global.ApplyConfig(cfg)
+}
+
+// ApplyConfig 保留 active* 与 prefetchPaused；收窄上限时不杀旧任务，只挡住超额新启动。
+func (p *PlatformLimiter) ApplyConfig(cfg config.RateLimitConfig) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	maxTask := cfg.MaxConcurrent
+	if maxTask <= 0 {
+		maxTask = 20
 	}
+	maxConn := cfg.MaxConnections
+	if maxConn <= 0 {
+		maxConn = 80
+	}
+	boostSlots := boostSlotsFor(maxTask)
+	reserved := connReservedFor(maxConn)
+
+	bytesPerSec := cfg.BandwidthMbps * 1024 * 1024 / 8
+	if p.bandwidth == nil {
+		if bytesPerSec <= 0 {
+			p.bandwidth = rate.NewLimiter(rate.Inf, 1<<20)
+		} else {
+			p.bandwidth = rate.NewLimiter(rate.Limit(bytesPerSec), int(bytesPerSec))
+		}
+	} else if bytesPerSec <= 0 {
+		p.bandwidth.SetLimit(rate.Inf)
+		p.bandwidth.SetBurst(1 << 20)
+	} else {
+		p.bandwidth.SetLimit(rate.Limit(bytesPerSec))
+		burst := int(bytesPerSec)
+		if burst < 1 {
+			burst = 1
+		}
+		p.bandwidth.SetBurst(burst)
+	}
+
+	cfg.MaxConcurrent = maxTask
+	cfg.MaxConnections = maxConn
+	p.cfg = cfg
+	p.maxBoost = boostSlots
+	p.connReserved = reserved
+	p.connSem = resizeSem(p.activeConns, maxConn)
 }
 
 func (r *Registry) SetIdleRatio(ratio float64) {
@@ -142,41 +211,56 @@ func (r *Registry) IdleRatio() float64 {
 }
 
 func (p *PlatformLimiter) AcquireTask(ctx context.Context, boost bool) error {
-	sem := p.taskSem
-	if boost {
-		sem = p.boostSem
-	}
-	select {
-	case sem <- struct{}{}:
+	for {
 		p.mu.Lock()
-		p.activeTasks++
+		maxTask := p.cfg.MaxConcurrent
+		if maxTask <= 0 {
+			maxTask = 20
+		}
+		maxBoost := p.maxBoost
+		if maxBoost <= 0 {
+			maxBoost = boostSlotsFor(maxTask)
+			p.maxBoost = maxBoost
+		}
+
+		ok := false
 		if boost {
-			p.activeBoost++
+			if p.activeBoost < maxBoost {
+				p.activeBoost++
+				p.activeTasks++
+				ok = true
+			}
+		} else {
+			normal := p.activeTasks - p.activeBoost
+			if normal < 0 {
+				normal = 0
+			}
+			if normal < maxTask {
+				p.activeTasks++
+				ok = true
+			}
 		}
 		p.mu.Unlock()
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+		if ok {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 
 func (p *PlatformLimiter) ReleaseTask(boost bool) {
-	sem := p.taskSem
-	if boost {
-		sem = p.boostSem
-	}
-	select {
-	case <-sem:
-	default:
-	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.activeTasks > 0 {
 		p.activeTasks--
 	}
 	if boost && p.activeBoost > 0 {
 		p.activeBoost--
 	}
-	p.mu.Unlock()
 }
 
 func (p *PlatformLimiter) AcquireConn(ctx context.Context, interactive bool) error {
@@ -382,7 +466,7 @@ func (p *PlatformLimiter) Snapshot() map[string]any {
 		"bandwidth_limited":        eff > 0,
 		"active_tasks":             p.activeTasks,
 		"active_boost":             p.activeBoost,
-		"boost_slots":              cap(p.boostSem),
+		"boost_slots":              p.maxBoost,
 		"active_conns":             p.activeConns,
 		"conn_reserved":            p.connReserved,
 		"prefetch_paused":          p.prefetchPaused,

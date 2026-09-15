@@ -17,7 +17,7 @@ var hrefAttrRe = regexp.MustCompile(`(?i)(href=["'])([^"']+)(["'])`)
 // wheelLinkRe 匹配包含 .whl 链接的 <a> 标签，用于注入 PEP 658 data-dist-info-metadata。
 var wheelLinkRe = regexp.MustCompile(`(?i)(<a\s[^>]*href=["'][^"']+\.whl(?:#[^"']*)?["'][^>]*)(\s*>)`)
 
-// PublicBaseURL 对外访问根；PublicHost 可含 scheme（https://host）或仅 host:port。
+// PublicBaseURL 对外访问根（请求期内由代理按访问 Host 填入 PublicHost）。
 func PublicBaseURL(cfg config.Config) string {
 	h := strings.TrimSpace(cfg.Server.PublicHost)
 	h = strings.TrimRight(h, "/")

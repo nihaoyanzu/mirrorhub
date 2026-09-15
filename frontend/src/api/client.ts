@@ -11,18 +11,6 @@ import type {
   SystemStats,
 } from '@/types/api'
 
-export interface NetworkHint {
-  url: string
-  ip: string
-  iface: string
-}
-
-export interface NetworkHintsResponse {
-  proxy_port: string
-  suggestions: NetworkHint[]
-  recommend_empty?: boolean
-}
-
 export interface PublicGuideModule {
   id: string
   enabled: boolean
@@ -30,7 +18,6 @@ export interface PublicGuideModule {
 
 export interface PublicGuide {
   proxy_port: string
-  addresses: NetworkHint[]
   modules: PublicGuideModule[]
 }
 
@@ -89,7 +76,6 @@ export const api = {
       body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
     }),
   getConfig: () => request<AppConfig>('/api/v1/config'),
-  getNetworkHints: () => request<NetworkHintsResponse>('/api/v1/network/hints'),
   putConfig: (body: unknown) =>
     request<void>('/api/v1/config', { method: 'PUT', body: JSON.stringify(body) }),
   testAccess: (body: unknown) =>

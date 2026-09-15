@@ -79,8 +79,12 @@ export interface QueueTask {
   priority: string
   error: string
   wait_ms: number | null
+  elapsed_ms?: number | null
   bytes_done?: number
   bytes_total?: number
+  created_at?: string
+  queued_at?: string
+  started_at?: string
   updated_at: string
 }
 
@@ -149,7 +153,6 @@ export interface MeResponse {
 
 export interface AppConfig {
   server: {
-    public_host: string
     upstream_proxy: string
   }
   cache: {
@@ -165,7 +168,6 @@ export interface AppConfig {
     windows?: { start: string; end: string; bandwidth_mbps?: number }[]
   }
   scheduler: {
-    interactive_priority: boolean
     prefetch: {
       idle_quota_ratio: number
       on_interactive: string

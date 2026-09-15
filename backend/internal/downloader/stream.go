@@ -483,6 +483,16 @@ func (e *Engine) copyStreamToClientAndFile(
 				e.traffic.AddDownload(int64(n))
 			}
 			if prefetch {
+				for {
+					if !pl.PrefetchPaused() {
+						break
+					}
+					select {
+					case <-ctx.Done():
+						return written, ctx.Err()
+					case <-time.After(200 * time.Millisecond):
+					}
+				}
 				if err := pl.WaitPrefetch(ctx, n, idle); err != nil {
 					return written, err
 				}
@@ -533,9 +543,22 @@ type limitReader struct {
 	prefetch bool
 	idle     float64
 	traffic  *traffic.Recorder
+	allow    func() bool
 }
 
 func (l *limitReader) Read(p []byte) (int, error) {
+	if l.prefetch && l.pl != nil {
+		for {
+			if !l.pl.PrefetchPaused() && (l.allow == nil || l.allow()) {
+				break
+			}
+			select {
+			case <-l.ctx.Done():
+				return 0, l.ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+	}
 	n, err := l.r.Read(p)
 	if n > 0 {
 		if l.prefetch {

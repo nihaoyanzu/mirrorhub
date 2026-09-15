@@ -75,6 +75,7 @@ func main() {
 	dl := downloader.New(cacheMgr, limiters, cfg.Server.UpstreamProxy, log, func() float64 {
 		return cfgMgr.Get().Scheduler.Prefetch.IdleQuotaRatio
 	}, tr)
+	dl.SetPrefetchGate(sched.PrefetchMayRun)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -109,7 +109,7 @@ func (s *Service) expandItem(ctx context.Context, item string) ([]string, error)
 	}
 	cfg := s.cfg.Get()
 	pf := cfg.Scheduler.Prefetch
-	env := pypihandler.TargetEnv{Python: pf.TargetPython, Platform: pf.TargetPlatform}
+	env := pypihandler.TargetEnv{Python: pf.TargetPythonVersions(), Platform: pf.TargetPlatform}
 
 	type node struct {
 		spec  string
@@ -217,29 +217,13 @@ func (s *Service) resolvePackageFiles(ctx context.Context, req *pypihandler.Requ
 	}
 	tags := mergeWheelTags(pf)
 	filtered := pypihandler.FilterArtifacts(matched, pf.ArtifactMode, tags, pf.TargetPlatform)
-	if len(filtered) == 0 && len(matched) > 0 && strings.ToLower(strings.TrimSpace(pf.ArtifactMode)) != "all" {
-		// portable + 过旧/过窄的 Python 标签时，二进制包（如 torch）会滤空；
-		// 回退到「目标平台全部 wheel」，仍不做跨平台全量预取。
-		filtered = pypihandler.FilterArtifacts(matched, "all", nil, pf.TargetPlatform)
-		if len(filtered) > 0 {
-			s.log.Warn("prefetch filter empty, fallback to target-platform wheels",
-				zap.String("pkg", req.Name),
-				zap.String("version", ver),
-				zap.String("mode", pf.ArtifactMode),
-				zap.Strings("python", pf.TargetPythonVersions()),
-				zap.String("platform", pf.TargetPlatform),
-				zap.Int("matched", len(matched)),
-				zap.Int("files", len(filtered)),
-			)
-		}
-	}
 	if len(filtered) == 0 {
 		if len(matched) == 0 {
 			return nil, "", fmt.Errorf("未找到匹配文件")
 		}
 		return nil, "", fmt.Errorf(
-			"未找到匹配文件（版本 %s 有 %d 个发行文件，均不符合预取策略 mode=%s python=%v platform=%s；可在「平台与上游」调整目标 Python/平台或改用 artifact_mode=all）",
-			ver, len(matched), pf.ArtifactMode, pf.TargetPythonVersions(), pf.TargetPlatform,
+			"未找到匹配文件（版本 %s 有 %d 个发行文件，均不符合预取策略 mode=%s python=%v tags=%v platform=%s；可在「平台与上游」调整目标 Python/平台、补充额外 wheel 标签，或改用 artifact_mode=all）",
+			ver, len(matched), pf.ArtifactMode, pf.TargetPythonVersions(), tags, pf.TargetPlatform,
 		)
 	}
 	s.log.Info("prefetch selected version",
@@ -247,6 +231,8 @@ func (s *Service) resolvePackageFiles(ctx context.Context, req *pypihandler.Requ
 		zap.String("version", ver),
 		zap.Int("files", len(filtered)),
 		zap.String("mode", pf.ArtifactMode),
+		zap.Strings("python", pf.TargetPythonVersions()),
+		zap.Strings("tags", tags),
 	)
 	metaURL = pickMetadataURL(filtered)
 	return filtered, metaURL, nil
@@ -394,6 +380,7 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 			TTLSeconds:     cfg.Cache.PackageTTLSeconds,
 			Platform:       "pypi",
 			Prefetch:       true,
+			TaskID:         taskID,
 			Headers:        http.Header{},
 			ChunkTTLHours:  cfg.Cache.ChunkTTLHours,
 			Kind:           "package",

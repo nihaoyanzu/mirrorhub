@@ -34,7 +34,7 @@ const form = reactive({
   resume_on_idle: true,
   artifact_mode: 'portable',
   extra_wheel_tags: '',
-  target_python: '3.9',
+  target_python: '3.10\n3.11\n3.12',
   target_platform: 'linux',
   max_depth: 5,
   max_packages: 200,
@@ -47,7 +47,6 @@ const form = reactive({
 
 /** 系统级字段：探测时只读带入，不在本页编辑 */
 const systemNet = reactive({
-  public_host: '',
   upstream_proxy: '',
 })
 
@@ -84,7 +83,6 @@ async function load() {
   loading.value = true
   try {
     const cfg: AppConfig = await api.getConfig()
-    systemNet.public_host = cfg.server?.public_host || ''
     systemNet.upstream_proxy = cfg.server?.upstream_proxy || ''
     const p = cfg.platforms?.pypi
     if (p) {
@@ -109,7 +107,7 @@ async function load() {
       form.artifact_mode = sch.prefetch?.artifact_mode || 'portable'
       form.extra_wheel_tags = (sch.prefetch?.extra_wheel_tags || []).join('\n')
       const tp = sch.prefetch?.target_python
-      form.target_python = Array.isArray(tp) ? tp.join('\n') : tp || '3.9'
+      form.target_python = Array.isArray(tp) ? tp.join('\n') : tp || '3.10\n3.11\n3.12'
       form.target_platform = sch.prefetch?.target_platform || 'linux'
       form.max_depth = sch.prefetch?.max_depth ?? 5
       form.max_packages = sch.prefetch?.max_packages ?? 200
@@ -134,7 +132,6 @@ async function save() {
         package_ttl_seconds: form.package_ttl_seconds,
       },
       scheduler: {
-        interactive_priority: true,
         prefetch: {
           idle_quota_ratio: form.idle_quota_ratio,
           on_interactive: form.on_interactive,
@@ -198,7 +195,6 @@ async function testAccess() {
   testChecks.value = null
   try {
     const res = await api.testAccess({
-      public_host: systemNet.public_host,
       upstream_proxy: systemNet.upstream_proxy,
       upstream: form.upstream,
       file_upstream: form.file_upstream,
@@ -220,7 +216,6 @@ function checkLabel(name: string) {
     file_upstream: t('platform.fileUpstream'),
     metadata_upstream: t('platform.metadataUpstream'),
     upstream_proxy: t('system.upstreamProxy'),
-    public_host: t('system.publicHost'),
   }
   return map[name] || name
 }
@@ -358,7 +353,7 @@ onMounted(() => {
               v-model="form.target_python"
               rows="2"
               class="ui-input font-mono text-sm"
-              placeholder="3.9&#10;3.12"
+              placeholder="3.10&#10;3.11&#10;3.12"
             />
           </div>
           <div>

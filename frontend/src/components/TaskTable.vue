@@ -3,7 +3,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import ModalDialog from '@/components/ModalDialog.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
 import { usePagination } from '@/composables/usePagination'
-import { fmtBytes, fmtDurationMs, fmtTime } from '@/lib/format'
+import { fmtBytes, fmtDurationMs } from '@/lib/format'
 import { prioClass, prioKey, statusClass, statusKey } from '@/lib/status'
 import { computed, ref, toRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -189,8 +189,8 @@ async function confirmCancelSelected() {
             <th>{{ t('queue.status') }}</th>
             <th>{{ t('dashboard.platform') }}</th>
             <th>{{ t('queue.task') }}</th>
-            <th>{{ t('dashboard.wait') }}</th>
-            <th>{{ t('dashboard.time') }}</th>
+            <th>{{ t('queue.wait') }}</th>
+            <th>{{ t('queue.download') }}</th>
             <th class="w-24">{{ t('queue.actions') }}</th>
           </tr>
         </thead>
@@ -233,7 +233,13 @@ async function confirmCancelSelected() {
             <td class="whitespace-nowrap font-mono text-xs text-muted">
               {{ fmtDurationMs(task.wait_ms, locale) }}
             </td>
-            <td class="whitespace-nowrap text-xs text-muted">{{ fmtTime(task.updated_at) }}</td>
+            <td class="whitespace-nowrap font-mono text-xs text-muted">
+              {{
+                task.status === 'queued'
+                  ? '-'
+                  : fmtDurationMs(task.elapsed_ms, locale)
+              }}
+            </td>
             <td>
               <button
                 v-if="canCancel(task)"

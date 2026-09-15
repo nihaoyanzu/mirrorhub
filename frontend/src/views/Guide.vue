@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
+import copy from 'clipboard-copy'
 import { api, getToken, type PublicGuide } from '@/api/client'
 import { setLocale, type SupportedLocale } from '@/i18n'
 
@@ -9,7 +10,6 @@ const { t, locale } = useI18n()
 const loading = ref(true)
 const guide = ref<PublicGuide | null>(null)
 const copied = ref('')
-const selectedHost = ref('')
 const activeTab = ref('')
 const toolTab = ref<'pip' | 'uv'>('pip')
 
@@ -18,20 +18,22 @@ const loggedIn = computed(() => !!getToken())
 const enabledModules = computed(() => (guide.value?.modules || []).filter((m) => m.enabled))
 const disabledModules = computed(() => (guide.value?.modules || []).filter((m) => !m.enabled))
 
-const addrOptions = computed(() =>
-  (guide.value?.addresses || []).map((a) => ({
-    value: a.url.replace(/\/$/, ''),
-    label: a.url.replace(/^https?:\/\//i, ''),
-  })),
-)
+/** 用当前打开说明页的 Host + 下载端口（适配 Docker 端口映射）。 */
+function accessDownloadURL(proxyPort: string): string {
+  const port = String(proxyPort || '18081').trim() || '18081'
+  if (typeof location === 'undefined') {
+    return `http://127.0.0.1:${port}`
+  }
+  const scheme = location.protocol === 'https:' ? 'https' : 'http'
+  let host = location.hostname || '127.0.0.1'
+  if (host === '::1' || host === '[::1]') host = '127.0.0.1'
+  const hostPart = host.includes(':') ? `[${host}]` : host
+  return `${scheme}://${hostPart}:${port}`
+}
 
-const baseURL = computed(() => {
-  if (selectedHost.value) return selectedHost.value.replace(/\/$/, '')
-  const port = guide.value?.proxy_port || '18081'
-  return `http://127.0.0.1:${port}`
-})
-
+const baseURL = computed(() => accessDownloadURL(guide.value?.proxy_port || '18081'))
 const indexURL = computed(() => `${baseURL.value}/simple/`)
+const displayHost = computed(() => baseURL.value.replace(/^https?:\/\//i, ''))
 
 const trustedHost = computed(() => {
   try {
@@ -74,17 +76,6 @@ const uvSnippets = computed(() => [
 
 const activeSnippets = computed(() => (toolTab.value === 'pip' ? pipSnippets.value : uvSnippets.value))
 
-function pickDefaultHost(g: PublicGuide) {
-  const addrs = g.addresses || []
-  if (!addrs.length) {
-    selectedHost.value = `http://127.0.0.1:${g.proxy_port || '18081'}`
-    return
-  }
-  const host = typeof location !== 'undefined' ? location.hostname : ''
-  const hit = host ? addrs.find((a) => a.ip === host) : undefined
-  selectedHost.value = (hit || addrs[0]).url.replace(/\/$/, '')
-}
-
 function syncTab() {
   const ids = enabledModules.value.map((m) => m.id)
   if (!ids.length) {
@@ -103,7 +94,7 @@ function toggleLang() {
 
 async function copyText(key: string, text: string) {
   try {
-    await navigator.clipboard.writeText(text)
+    await copy(text)
     copied.value = key
     window.setTimeout(() => {
       if (copied.value === key) copied.value = ''
@@ -125,11 +116,9 @@ onMounted(async () => {
   } catch {
     guide.value = {
       proxy_port: '18081',
-      addresses: [],
       modules: [{ id: 'pypi', enabled: true }],
     }
   } finally {
-    if (guide.value) pickDefaultHost(guide.value)
     syncTab()
     loading.value = false
   }
@@ -167,20 +156,9 @@ onMounted(async () => {
 
       <template v-else>
         <div class="mb-4">
-          <label class="ui-label" for="guide-host">{{ t('guide.addresses') }}</label>
-          <select
-            id="guide-host"
-            v-model="selectedHost"
-            class="ui-input font-mono text-sm"
-            :disabled="!addrOptions.length"
-          >
-            <option v-for="opt in addrOptions" :key="opt.value" :value="opt.value">
-              {{ opt.label }}
-            </option>
-          </select>
-          <p v-if="!addrOptions.length" class="mt-2 text-xs text-muted">
-            {{ t('system.localAddressesEmpty') }}
-          </p>
+          <div class="ui-label">{{ t('guide.addresses') }}</div>
+          <div class="ui-input font-mono text-sm text-muted">{{ displayHost }}</div>
+          <p class="mt-2 text-xs text-muted">{{ t('guide.addressesHint') }}</p>
         </div>
 
         <div v-if="!enabledModules.length" class="ui-panel p-5 text-sm text-muted">
@@ -248,10 +226,7 @@ onMounted(async () => {
           </section>
         </template>
 
-        <p
-          v-if="disabledModules.length"
-          class="mt-4 text-xs text-muted"
-        >
+        <p v-if="disabledModules.length" class="mt-4 text-xs text-muted">
           {{ t('guide.disabled') }}：
           <span v-for="(m, i) in disabledModules" :key="m.id">
             {{ moduleTitle(m.id) }}<span v-if="i < disabledModules.length - 1"> · </span>

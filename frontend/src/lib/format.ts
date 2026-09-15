@@ -15,23 +15,31 @@ export function fmtRate(bps: number): string {
   return `${fmtBytes(bps)}/s`
 }
 
-/** 将毫秒格式化为可读时长（秒 / 分钟 / 小时 / 天） */
+/**
+ * 将毫秒格式化为可读时长：精确到下一单位（如 2小时15分钟 / 3分钟20秒），不下沉到毫秒。
+ * 排队中尚未满 1 秒时显示「不到1秒」。
+ */
 export function fmtDurationMs(ms: number | null | undefined, locale?: string): string {
   if (ms == null || Number.isNaN(Number(ms)) || ms < 0) return '-'
-  const n = Math.floor(Number(ms))
   const zh = !locale || String(locale).toLowerCase().startsWith('zh')
-  const fmt = (v: number, zhUnit: string, enUnit: string) => {
-    const text = String(Math.max(1, Math.round(v)))
-    return zh ? `${text} ${zhUnit}` : `${text} ${enUnit}`
+  const totalSec = Math.floor(Number(ms) / 1000)
+  if (totalSec < 1) return zh ? '不到1秒' : '<1s'
+
+  const days = Math.floor(totalSec / 86400)
+  const hours = Math.floor((totalSec % 86400) / 3600)
+  const mins = Math.floor((totalSec % 3600) / 60)
+  const secs = totalSec % 60
+
+  if (days > 0) {
+    return zh ? `${days}天${hours}小时` : `${days}d ${hours}h`
   }
-  if (n < 1000) return zh ? `${n} 毫秒` : `${n} ms`
-  const sec = n / 1000
-  if (sec < 60) return fmt(sec, '秒', 's')
-  const min = sec / 60
-  if (min < 60) return fmt(min, '分钟', 'min')
-  const hr = min / 60
-  if (hr < 48) return fmt(hr, '小时', 'h')
-  return fmt(hr / 24, '天', 'd')
+  if (hours > 0) {
+    return zh ? `${hours}小时${mins}分钟` : `${hours}h ${mins}min`
+  }
+  if (mins > 0) {
+    return zh ? `${mins}分钟${secs}秒` : `${mins}min ${secs}s`
+  }
+  return zh ? `${secs}秒` : `${secs}s`
 }
 
 export function fmtTime(v: string | number | Date | null | undefined): string {

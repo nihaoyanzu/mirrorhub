@@ -15,7 +15,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/router"
 )
 
-func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router.Match, cfg config.Config, pypi config.PlatformConfig, prefetch, boost bool, onAcquired func(), onProgress func(done, total int64)) (string, string, error) {
+func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router.Match, cfg config.Config, pypi config.PlatformConfig, prefetch, boost bool, onAcquired func(), onProgress func(done, total int64), taskID string) (string, string, error) {
 	origURL := m.TargetURL
 	headers := platform.FilterRequestHeaders(r.Header)
 	cacheKey := cache.KeyFromURL(origURL)
@@ -137,6 +137,7 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 		Platform:       m.Platform,
 		Prefetch:       prefetch,
 		Boost:          fileBoost,
+		TaskID:         taskID,
 		Headers:        headers,
 		ChunkTTLHours:  cfg.Cache.ChunkTTLHours,
 		Kind:           "package",

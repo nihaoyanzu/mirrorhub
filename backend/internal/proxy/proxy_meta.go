@@ -11,7 +11,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/router"
 )
 
-func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, m *router.Match, cfg config.Config, pypi config.PlatformConfig, prefetch, boost bool, onAcquired func()) (string, error) {
+func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, m *router.Match, cfg config.Config, pypi config.PlatformConfig, prefetch, boost bool, onAcquired func(), taskID string) (string, error) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return s.handleIndexFallbackProxy(w, r, m, prefetch, boost, onAcquired)
 	}
@@ -29,6 +29,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, m *route
 		Platform:      m.Platform,
 		Prefetch:      prefetch,
 		Boost:         boost,
+		TaskID:        taskID,
 		Headers:       headers,
 		ChunkTTLHours: cfg.Cache.ChunkTTLHours,
 		Kind:          "metadata",

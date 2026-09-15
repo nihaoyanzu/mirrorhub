@@ -52,6 +52,7 @@ type TaskInfo struct {
 	StartedAt time.Time `json:"started_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 	WaitMs    int64     `json:"wait_ms"`
+	ElapsedMs int64     `json:"elapsed_ms"` // 下载耗时：running=至今；终态=StartedAt→UpdatedAt
 	BytesDone int64     `json:"bytes_done"`
 	BytesTotal int64    `json:"bytes_total"`
 	Error     string    `json:"error,omitempty"`
@@ -90,15 +91,7 @@ func (s *Scheduler) Begin(platform, rawURL string, prio Priority, boost bool) st
 	if boost && prio == PriorityInteractive {
 		prioLabel = "P0+"
 	}
-	// 若预取正被 pause，新预取任务记为 P1 Resume（仅展示/恢复优先级）
-	if prio == PriorityPrefetch {
-		if pl := s.limiters.Get(platform); pl != nil && pl.PrefetchPaused() {
-			prio = PriorityResume
-			prioLabel = PriorityResume.String()
-		}
-	}
 	// 仅真实交互（P0）计入 p0Active。
-	// 若把 P1 Resume 也算进去，暂停期间入队的预取会顶住 p0Active，导致永远无法 resumeOnIdle。
 	countsActive := prio == PriorityInteractive
 	label, detail := taskDisplay(rawURL)
 	info := &TaskInfo{
@@ -306,9 +299,6 @@ func (s *Scheduler) URLOf(id string) (string, bool) {
 
 func (s *Scheduler) pausePrefetchIfNeeded(platform string) {
 	cfg := s.cfgFn()
-	if !cfg.InteractivePriority {
-		return
-	}
 	if cfg.Prefetch.OnInteractive != "pause" {
 		return
 	}
@@ -317,15 +307,56 @@ func (s *Scheduler) pausePrefetchIfNeeded(platform string) {
 			metrics.PrefetchPaused.Set(1)
 			s.log.Info("prefetch paused due to interactive traffic", zap.String("platform", platform))
 		}
-		// 运行中的 P2 标记为 P1（仅改展示/恢复优先级，不计入 p0Active）
+		// 只把「运行中」的 P2 标成 P1（被打断的在途任务）；排队中的仍保持 P2，避免 P1 膨胀
 		s.mu.Lock()
 		for _, t := range s.tasks {
-			if t.Status == "running" && t.Priority == PriorityPrefetch.String() {
+			if t == nil || t.Status != "running" {
+				continue
+			}
+			if t.Priority == PriorityPrefetch.String() {
 				t.Priority = PriorityResume.String()
+				t.UpdatedAt = time.Now()
 			}
 		}
+		s.refreshTaskMetricsLocked()
 		s.mu.Unlock()
 	}
+}
+
+// PrefetchMayRun 预取任务是否允许继续占槽/读字节。
+// P0 暂停由限速器 PrefetchPaused 单独处理；此处只表达 P1 > P2：
+// 「P1 清空」= 没有仍在 queued/running 的 P1（被打断的那批跑完/取消），不是清队列按钮。
+// 仍有活跃 P1 时普通 P2 让路；已被标为 P1 的可在 pause 解除后继续。
+func (s *Scheduler) PrefetchMayRun(taskID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[taskID]
+	if t == nil {
+		return s.resumeCountLocked() == 0
+	}
+	if t.Priority == PriorityResume.String() {
+		return true
+	}
+	if t.Priority == PriorityInteractive.String() || strings.HasPrefix(t.Priority, "P0") {
+		return true
+	}
+	return s.resumeCountLocked() == 0
+}
+
+func (s *Scheduler) resumeCountLocked() int64 {
+	var n int64
+	for _, t := range s.tasks {
+		if t == nil {
+			continue
+		}
+		if t.Priority != PriorityResume.String() {
+			continue
+		}
+		if t.Status == "queued" || t.Status == "running" {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *Scheduler) resumePrefetchIfIdle() {
@@ -350,24 +381,12 @@ func (s *Scheduler) InteractiveActive() int64 {
 	return s.p0Active.Load()
 }
 
-// ResumeCount 当前仍活跃（queued/running）的 P1 恢复任务数，非历史累计。
-func (s *Scheduler) ResumeCount() int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var n int64
-	for _, t := range s.tasks {
-		if t == nil {
-			continue
-		}
-		if t.Priority != PriorityResume.String() {
-			continue
-		}
-		if t.Status == "queued" || t.Status == "running" {
-			n++
-		}
+	// ResumeCount 当前仍活跃（queued/running）的 P1 恢复任务数，非历史累计。
+	func (s *Scheduler) ResumeCount() int64 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.resumeCountLocked()
 	}
-	return n
-}
 
 func (s *Scheduler) List() []TaskInfo {
 	s.mu.Lock()
@@ -377,10 +396,29 @@ func (s *Scheduler) List() []TaskInfo {
 	for i := len(s.order) - 1; i >= 0; i-- {
 		if t, ok := s.tasks[s.order[i]]; ok {
 			cp := *t
-			if cp.Status == "running" && !cp.StartedAt.IsZero() {
-				cp.WaitMs = cp.StartedAt.Sub(cp.QueuedAt).Milliseconds()
-			} else if cp.Status == "queued" {
+			switch {
+			case cp.Status == "queued":
 				cp.WaitMs = now.Sub(cp.QueuedAt).Milliseconds()
+				cp.ElapsedMs = 0
+			case !cp.StartedAt.IsZero():
+				if cp.WaitMs <= 0 {
+					cp.WaitMs = cp.StartedAt.Sub(cp.QueuedAt).Milliseconds()
+				}
+				if cp.Status == "running" {
+					cp.ElapsedMs = now.Sub(cp.StartedAt).Milliseconds()
+				} else {
+					end := cp.UpdatedAt
+					if end.IsZero() || end.Before(cp.StartedAt) {
+						end = now
+					}
+					cp.ElapsedMs = end.Sub(cp.StartedAt).Milliseconds()
+				}
+			}
+			if cp.WaitMs < 0 {
+				cp.WaitMs = 0
+			}
+			if cp.ElapsedMs < 0 {
+				cp.ElapsedMs = 0
 			}
 			out = append(out, cp)
 		}
