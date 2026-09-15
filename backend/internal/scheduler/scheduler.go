@@ -116,7 +116,6 @@ func (s *Scheduler) Begin(platform, rawURL string, prio Priority, boost bool) st
 	} else {
 		s.order = append(s.order, id)
 	}
-	s.trimOrderLocked()
 	s.refreshTaskMetricsLocked()
 	s.mu.Unlock()
 
@@ -202,28 +201,6 @@ func taskDisplay(rawURL string) (label, detail string) {
 	}
 	// 包规格（如 requests>=2）或解析失败项
 	return rawURL, ""
-}
-
-func (s *Scheduler) trimOrderLocked() {
-	for len(s.order) > 500 {
-		removed := false
-		for i := len(s.order) - 1; i >= 0; i-- {
-			id := s.order[i]
-			t, ok := s.tasks[id]
-			if !ok || t.Status == "done" || t.Status == "error" || t.Status == "cancelled" {
-				s.order = append(s.order[:i], s.order[i+1:]...)
-				if ok {
-					s.releaseActiveLocked(t) // 防御：异常路径未 End 时避免泄漏
-					delete(s.tasks, id)
-				}
-				removed = true
-				break
-			}
-		}
-		if !removed {
-			break
-		}
-	}
 }
 
 func (s *Scheduler) releaseActiveLocked(t *TaskInfo) {
