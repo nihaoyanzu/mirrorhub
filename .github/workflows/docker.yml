@@ -2,6 +2,7 @@ name: docker
 
 on:
   push:
+    # 日常 main 推送仍构建 sha 标签；以 release: 开头的提交只走 tag 构建，避免与 v* 双跑
     branches: [main, master]
     tags: ["v*"]
   pull_request:
@@ -15,13 +16,19 @@ permissions:
 env:
   REGISTRY: ghcr.io
 
-# 避免 main 与 tag 并发推送导致 latest / 版本号 / sha 落在不同 digest
+# 同一仓库同时只跑一个 GHCR 构建，避免 latest / 版本号 / sha 落在不同 digest
 concurrency:
   group: docker-ghcr
   cancel-in-progress: false
 
 jobs:
   build:
+    # release 提交：跳过 branch 推送，只等 tag 构建（否则会 main + vX.Y 各跑一遍）
+    if: >
+      github.event_name != 'push' ||
+      github.ref_type == 'tag' ||
+      github.event_name == 'workflow_dispatch' ||
+      !(startsWith(github.event.head_commit.message || '', 'release:'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
