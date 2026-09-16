@@ -35,13 +35,13 @@ const form = reactive({
   artifact_mode: 'portable',
   extra_wheel_tags: '',
   target_python: '3.10\n3.11\n3.12',
-  target_platform: 'linux',
+  target_platforms: ['linux'] as string[],
   max_depth: 5,
   max_packages: 200,
   small_file_boost_enabled: true,
   small_file_boost_kb: 512,
-  index_ttl_seconds: 300,
-  package_ttl_seconds: 86400,
+  index_ttl_seconds: 604800,
+  package_ttl_seconds: 0,
   max_size_gb: 100,
 })
 
@@ -56,6 +56,41 @@ const tabs = computed(() => [
   { id: 'prefetch' as const, label: t('platform.tabPrefetch') },
   { id: 'cache' as const, label: t('platform.tabCache') },
 ])
+
+const platformOptions = [
+  { id: 'linux', labelKey: 'platform.platLinux' },
+  { id: 'linux-arm', labelKey: 'platform.platLinuxArm' },
+  { id: 'win32', labelKey: 'platform.platWin' },
+  { id: 'win-arm', labelKey: 'platform.platWinArm' },
+  { id: 'darwin', labelKey: 'platform.platDarwin' },
+  { id: 'darwin-arm', labelKey: 'platform.platDarwinArm' },
+] as const
+
+function normalizePlatforms(raw: unknown, legacy?: string): string[] {
+  const allowed = new Set<string>(platformOptions.map((o) => o.id))
+  const out: string[] = []
+  const push = (v: string) => {
+    const id = String(v || '').trim().toLowerCase()
+    if (!id || !allowed.has(id)) return
+    if (!out.includes(id)) out.push(id)
+  }
+  if (Array.isArray(raw)) {
+    for (const v of raw) push(String(v))
+  }
+  if (out.length === 0 && legacy) push(legacy)
+  return out.length ? out : ['linux']
+}
+
+function togglePlatform(id: string) {
+  const i = form.target_platforms.indexOf(id)
+  if (i >= 0) {
+    if (form.target_platforms.length <= 1) return
+    form.target_platforms.splice(i, 1)
+  } else {
+    form.target_platforms.push(id)
+  }
+  markDirty()
+}
 
 function syncTabFromRoute() {
   const q = String(route.query.tab || '')
@@ -108,7 +143,7 @@ async function load() {
       form.extra_wheel_tags = (sch.prefetch?.extra_wheel_tags || []).join('\n')
       const tp = sch.prefetch?.target_python
       form.target_python = Array.isArray(tp) ? tp.join('\n') : tp || '3.10\n3.11\n3.12'
-      form.target_platform = sch.prefetch?.target_platform || 'linux'
+      form.target_platforms = normalizePlatforms(sch.prefetch?.target_platforms, sch.prefetch?.target_platform)
       form.max_depth = sch.prefetch?.max_depth ?? 5
       form.max_packages = sch.prefetch?.max_packages ?? 200
       form.small_file_boost_enabled = sch.small_file_boost?.enabled !== false
@@ -145,7 +180,8 @@ async function save() {
             .split(/[\n,]+/)
             .map((s) => s.trim())
             .filter(Boolean),
-          target_platform: form.target_platform,
+          target_platforms: form.target_platforms.length ? [...form.target_platforms] : ['linux'],
+          target_platform: form.target_platforms[0] || 'linux',
           max_depth: form.max_depth,
           max_packages: form.max_packages,
         },
@@ -356,13 +392,21 @@ onMounted(() => {
               placeholder="3.10&#10;3.11&#10;3.12"
             />
           </div>
-          <div>
+          <div class="sm:col-span-3">
             <label class="ui-label">{{ t('platform.targetPlatform') }}</label>
-            <select v-model="form.target_platform" class="ui-input">
-              <option value="linux">linux</option>
-              <option value="win32">win32</option>
-              <option value="darwin">darwin</option>
-            </select>
+            <p class="mb-2 text-xs text-muted">{{ t('platform.targetPlatformHint') }}</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="opt in platformOptions"
+                :key="opt.id"
+                type="button"
+                class="ui-chip"
+                :class="{ 'ui-chip-active': form.target_platforms.includes(opt.id) }"
+                @click="togglePlatform(opt.id)"
+              >
+                {{ t(opt.labelKey) }}
+              </button>
+            </div>
           </div>
           <div>
             <label class="ui-label">{{ t('platform.depDepth') }}</label>
@@ -393,10 +437,12 @@ onMounted(() => {
           <div>
             <label class="ui-label">{{ t('platform.indexTTL') }}</label>
             <input v-model.number="form.index_ttl_seconds" type="number" min="1" class="ui-input" />
+            <p class="mt-1 text-xs text-muted">{{ t('platform.indexTTLHint') }}</p>
           </div>
           <div>
             <label class="ui-label">{{ t('platform.packageTTL') }}</label>
-            <input v-model.number="form.package_ttl_seconds" type="number" min="1" class="ui-input" />
+            <input v-model.number="form.package_ttl_seconds" type="number" min="0" class="ui-input" />
+            <p class="mt-1 text-xs text-muted">{{ t('platform.packageTTLHint') }}</p>
           </div>
         </div>
         <div class="mt-6 border-t border-danger/20 pt-5">

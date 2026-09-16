@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -356,7 +357,7 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 			continue
 		}
 		g.Go(func() error {
-			if err := e.waitPrefetchGate(gctx, pl, opt); err != nil {
+			if _, err := e.waitPrefetchGate(gctx, pl, opt); err != nil {
 				return err
 			}
 			if err := pl.AcquireConn(gctx, !opt.Prefetch); err != nil {
@@ -376,8 +377,11 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 						notifyProgress(opt, downloaded.Add(-got), size)
 					}
 					lastErr = err
-					time.Sleep(time.Duration(1<<attempt) * time.Second)
-					continue
+					if errors.Is(err, errPrefetchReconnect) || isTransientNetErr(err) {
+						time.Sleep(time.Duration(1<<attempt) * time.Second)
+						continue
+					}
+					return err
 				}
 				mu.Lock()
 				completed = append(completed, [2]int64{ch.start, ch.end})
@@ -419,6 +423,26 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 
 // downloadSerial 单连接整包下载（上游未提供 Content-Length 时使用）
 func (e *Engine) downloadSerial(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, ct, strategy string) (*Result, error) {
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		res, err := e.downloadSerialOnce(ctx, pl, opt, ct, strategy)
+		if err == nil {
+			return res, nil
+		}
+		last = err
+		if !errors.Is(err, errPrefetchReconnect) && !isTransientNetErr(err) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(1<<attempt) * time.Second):
+		}
+	}
+	return nil, last
+}
+
+func (e *Engine) downloadSerialOnce(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, ct, strategy string) (*Result, error) {
 	if err := pl.AcquireConn(ctx, !opt.Prefetch); err != nil {
 		return nil, err
 	}
@@ -519,19 +543,24 @@ func (e *Engine) prefetchAllow(opt Options) func() bool {
 	return func() bool { return gate(taskID) }
 }
 
+// errPrefetchReconnect：pause 期间停读后连接可能已僵死，调用方应换新请求重试。
+var errPrefetchReconnect = errors.New("prefetch reconnect after pause")
+
 // waitPrefetchGate：P0 交互 pause 时挡住全部预取；pause 解除后普通 P2 还要给活跃 P1 让路。
-func (e *Engine) waitPrefetchGate(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options) error {
+// held=true 表示曾被门闩挡住，上游连接不宜继续读。
+func (e *Engine) waitPrefetchGate(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options) (held bool, err error) {
 	if !opt.Prefetch || pl == nil {
-		return nil
+		return false, nil
 	}
 	allow := e.prefetchAllow(opt)
 	for {
 		if !pl.PrefetchPaused() && (allow == nil || allow()) {
-			return nil
+			return held, nil
 		}
+		held = true
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return true, ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
@@ -546,7 +575,7 @@ func (e *Engine) acquireTaskSlot(ctx context.Context, pl *ratelimit.PlatformLimi
 		return pl.AcquireTask(ctx, opt.Boost)
 	}
 	for {
-		if err := e.waitPrefetchGate(ctx, pl, opt); err != nil {
+		if _, err := e.waitPrefetchGate(ctx, pl, opt); err != nil {
 			return err
 		}
 		if err := pl.AcquireTask(ctx, opt.Boost); err != nil {
@@ -628,8 +657,13 @@ func (e *Engine) fetchChunk(ctx context.Context, pl *ratelimit.PlatformLimiter, 
 				idle = e.idleRatio()
 			}
 			if opt.Prefetch {
-				if err := e.waitPrefetchGate(ctx, pl, opt); err != nil {
+				held, err := e.waitPrefetchGate(ctx, pl, opt)
+				if err != nil {
 					return err
+				}
+				if held {
+					// pause 期间停读，原连接可能已僵死，换 Range 重拉本分片
+					return errPrefetchReconnect
 				}
 				if err := pl.WaitPrefetch(ctx, n, idle); err != nil {
 					return err

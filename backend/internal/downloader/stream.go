@@ -548,15 +548,21 @@ type limitReader struct {
 
 func (l *limitReader) Read(p []byte) (int, error) {
 	if l.prefetch && l.pl != nil {
+		held := false
 		for {
 			if !l.pl.PrefetchPaused() && (l.allow == nil || l.allow()) {
 				break
 			}
+			held = true
 			select {
 			case <-l.ctx.Done():
 				return 0, l.ctx.Err()
 			case <-time.After(200 * time.Millisecond):
 			}
+		}
+		if held {
+			// pause 解除后旧 body 可能已僵死，交给上层换连接重拉
+			return 0, errPrefetchReconnect
 		}
 	}
 	n, err := l.r.Read(p)

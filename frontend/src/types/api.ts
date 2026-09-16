@@ -175,7 +175,8 @@ export interface AppConfig {
       artifact_mode: string
       extra_wheel_tags: string[]
       target_python: string[]
-      target_platform: string
+      target_platforms?: string[]
+      target_platform?: string
       max_depth: number
       max_packages: number
     }

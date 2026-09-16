@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/livehl/mirrorhub/internal/config"
 )
 
 var (
@@ -249,7 +251,7 @@ func SelectFiles(fileURLs []string, req *Requirement) (version string, urls []st
 // 平台过滤始终生效（不受 mode 影响）；mode 控制品类过滤：
 //   - all：保留 sdist + none-any + 目标平台 wheel（不限 cp 标签）
 //   - portable（默认）：保留 sdist + none-any + 「目标平台匹配 + cp 标签命中」的平台 wheel
-func FilterArtifacts(urls []string, mode string, extraTags []string, targetPlatform string) []string {
+func FilterArtifacts(urls []string, mode string, extraTags []string, targetPlatforms []string) []string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	tags := make([]string, 0, len(extraTags))
 	for _, t := range extraTags {
@@ -258,7 +260,7 @@ func FilterArtifacts(urls []string, mode string, extraTags []string, targetPlatf
 			tags = append(tags, t)
 		}
 	}
-	plat := normalizePlat(targetPlatform)
+	plats := normalizePlatformList(targetPlatforms)
 	needTag := mode != "all" // portable 模式要求 cp 标签匹配
 	out := make([]string, 0, len(urls))
 	seen := map[string]struct{}{}
@@ -270,7 +272,7 @@ func FilterArtifacts(urls []string, mode string, extraTags []string, targetPlatf
 		} else if strings.HasSuffix(fn, ".whl") {
 			if wheelIsNoneAny(fn) {
 				keep = true // none-any 始终保留
-			} else if wheelMatchesPlatform(fn, plat) {
+			} else if wheelMatchesAnyPlatform(fn, plats) {
 				// 平台 wheel：all 模式直接保留；portable 模式还需匹配 cp 标签
 				keep = !needTag || wheelMatchesAnyTag(fn, tags)
 			}
@@ -291,21 +293,64 @@ func wheelIsNoneAny(fn string) bool {
 	return strings.Contains(fn, "-none-any.whl") || strings.Contains(fn, ".py2.py3-none-any")
 }
 
-// wheelMatchesPlatform 按组织目标平台过滤；排除明显跨平台专有 wheel。
+func normalizePlatformList(in []string) []string {
+	return config.NormalizeTargetPlatforms(in)
+}
+
+func wheelMatchesAnyPlatform(fn string, plats []string) bool {
+	for _, p := range plats {
+		if wheelMatchesPlatform(fn, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func wheelIsARM(fn string) bool {
+	return strings.Contains(fn, "aarch64") ||
+		strings.Contains(fn, "arm64") ||
+		strings.Contains(fn, "win_arm") ||
+		strings.Contains(fn, "_armv7") ||
+		strings.Contains(fn, "_armv6")
+}
+
+func wheelIsLinuxFamily(fn string) bool {
+	if strings.Contains(fn, "win") || strings.Contains(fn, "macosx") || strings.Contains(fn, "darwin") {
+		return false
+	}
+	return strings.Contains(fn, "manylinux") ||
+		strings.Contains(fn, "musllinux") ||
+		strings.Contains(fn, "linux_")
+}
+
+// wheelMatchesPlatform 按组织目标平台过滤；linux / linux-arm / win32 / win-arm / darwin / darwin-arm。
 func wheelMatchesPlatform(fn, plat string) bool {
+	arm := wheelIsARM(fn)
 	switch plat {
 	case "win32":
-		return strings.Contains(fn, "win")
-	case "darwin":
-		return strings.Contains(fn, "macosx") || strings.Contains(fn, "darwin")
-	default: // linux
-		if strings.Contains(fn, "win_") || strings.Contains(fn, "win32") ||
-			strings.Contains(fn, "macosx") || strings.Contains(fn, "darwin") {
+		if !strings.Contains(fn, "win") {
 			return false
 		}
-		return strings.Contains(fn, "manylinux") ||
-			strings.Contains(fn, "musllinux") ||
-			strings.Contains(fn, "linux_")
+		return !strings.Contains(fn, "win_arm")
+	case "win-arm":
+		return strings.Contains(fn, "win_arm")
+	case "darwin":
+		if !(strings.Contains(fn, "macosx") || strings.Contains(fn, "darwin")) {
+			return false
+		}
+		if strings.Contains(fn, "universal2") {
+			return true
+		}
+		return !arm
+	case "darwin-arm":
+		if !(strings.Contains(fn, "macosx") || strings.Contains(fn, "darwin")) {
+			return false
+		}
+		return arm || strings.Contains(fn, "universal2")
+	case "linux-arm":
+		return wheelIsLinuxFamily(fn) && arm
+	default: // linux (x86_64 / i686 等)
+		return wheelIsLinuxFamily(fn) && !arm
 	}
 }
 

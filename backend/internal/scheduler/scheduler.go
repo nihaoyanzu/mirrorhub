@@ -63,6 +63,9 @@ type TaskInfo struct {
 	lastProgAt   time.Time
 }
 
+// 交互空隙短于此时长不恢复预取，避免 pip 索引/包请求间隙把 PrefetchPaused 抖开又抖上。
+const prefetchResumeDelay = 3 * time.Second
+
 type Scheduler struct {
 	mu           sync.Mutex
 	tasks        map[string]*TaskInfo
@@ -70,8 +73,10 @@ type Scheduler struct {
 	limiters     *ratelimit.Registry
 	cfgFn        func() config.SchedulerConfig
 	log          *zap.Logger
-	p0Active atomic.Int64
-	nextID   atomic.Uint64
+	p0Active     atomic.Int64
+	nextID       atomic.Uint64
+	resumeMu     sync.Mutex
+	resumeTimer  *time.Timer
 }
 
 func New(lim *ratelimit.Registry, cfgFn func() config.SchedulerConfig, log *zap.Logger) *Scheduler {
@@ -83,7 +88,9 @@ func New(lim *ratelimit.Registry, cfgFn func() config.SchedulerConfig, log *zap.
 	}
 }
 
-func (s *Scheduler) Begin(platform, rawURL string, prio Priority, boost bool) string {
+// Begin 登记任务。holdInteractive 为 true 时才计入 p0Active 并暂停预取
+//（制品下载）；索引/metadata 应传 false，避免短请求把预取抖停。
+func (s *Scheduler) Begin(platform, rawURL string, prio Priority, boost, holdInteractive bool) string {
 	seq := s.nextID.Add(1)
 	id := rawURL + "#" + strconv.FormatUint(seq, 10)
 	now := time.Now()
@@ -91,8 +98,7 @@ func (s *Scheduler) Begin(platform, rawURL string, prio Priority, boost bool) st
 	if boost && prio == PriorityInteractive {
 		prioLabel = "P0+"
 	}
-	// 仅真实交互（P0）计入 p0Active。
-	countsActive := prio == PriorityInteractive
+	countsActive := holdInteractive && prio == PriorityInteractive
 	label, detail := taskDisplay(rawURL)
 	info := &TaskInfo{
 		ID:           id,
@@ -274,11 +280,21 @@ func (s *Scheduler) URLOf(id string) (string, bool) {
 	return t.URL, true
 }
 
+func (s *Scheduler) cancelResumeTimer() {
+	s.resumeMu.Lock()
+	defer s.resumeMu.Unlock()
+	if s.resumeTimer != nil {
+		s.resumeTimer.Stop()
+		s.resumeTimer = nil
+	}
+}
+
 func (s *Scheduler) pausePrefetchIfNeeded(platform string) {
 	cfg := s.cfgFn()
 	if cfg.Prefetch.OnInteractive != "pause" {
 		return
 	}
+	s.cancelResumeTimer()
 	if pl := s.limiters.Get(platform); pl != nil {
 		if changed := pl.SetPrefetchPaused(true); changed {
 			metrics.PrefetchPaused.Set(1)
@@ -344,11 +360,28 @@ func (s *Scheduler) resumePrefetchIfIdle() {
 	if s.p0Active.Load() > 0 {
 		return
 	}
+	s.resumeMu.Lock()
+	defer s.resumeMu.Unlock()
+	if s.resumeTimer != nil {
+		s.resumeTimer.Stop()
+	}
+	s.resumeTimer = time.AfterFunc(prefetchResumeDelay, func() {
+		if s.p0Active.Load() > 0 {
+			return
+		}
+		s.applyPrefetchResume()
+	})
+}
+
+func (s *Scheduler) applyPrefetchResume() {
 	for _, snap := range s.limiters.Snapshots() {
 		name, _ := snap["platform"].(string)
 		if pl := s.limiters.Get(name); pl != nil {
 			if pl.SetPrefetchPaused(false) {
 				metrics.PrefetchPaused.Set(0)
+				if s.log != nil {
+					s.log.Info("prefetch resumed after interactive idle", zap.String("platform", name))
+				}
 			}
 		}
 	}

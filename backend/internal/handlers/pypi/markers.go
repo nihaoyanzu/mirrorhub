@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/livehl/mirrorhub/internal/config"
 )
 
 var requiresDistRe = regexp.MustCompile(`(?i)^Requires-Dist:\s*(.+)$`)
@@ -30,10 +32,11 @@ func ParseRequiresDist(meta []byte) []string {
 }
 
 // TargetEnv 组织目标环境（非网关本机），用于评估依赖 marker。
-// Python 为精确版本列表；marker 对列表中任一版本为真即纳入。
+// Python / Platforms 均为列表；任一组合命中即纳入。
 type TargetEnv struct {
-	Python   []string // 如 ["3.10", "3.12"]
-	Platform string   // linux / win32 / darwin
+	Python    []string // 如 ["3.10", "3.12"]
+	Platforms []string // linux / linux-arm / win32 / win-arm / darwin / darwin-arm
+	Platform  string   // 兼容旧单值
 }
 
 // SplitReqMarker 拆分 "name (>=1); marker" 为规格与 marker。
@@ -47,6 +50,7 @@ func SplitReqMarker(raw string) (reqPart, marker string) {
 
 // EvalMarker 评估精简 PEP 508 marker；不支持的复杂表达式偏保守返回 true（尽量预热）。
 // 对 python_version：仅按配置的精确版本列表评估（任一命中即纳入）。
+// 对平台：任一目标平台命中即纳入。
 func EvalMarker(marker string, env TargetEnv) bool {
 	marker = strings.TrimSpace(marker)
 	if marker == "" {
@@ -59,14 +63,20 @@ func EvalMarker(marker string, env TargetEnv) bool {
 			return false
 		}
 	}
-	plat := normalizePlat(env.Platform)
+	plats := append([]string{}, env.Platforms...)
+	if env.Platform != "" {
+		plats = append(plats, env.Platform)
+	}
+	plats = config.NormalizeTargetPlatforms(plats)
 	versions := env.Python
 	if len(versions) == 0 {
 		versions = []string{"3.10", "3.11", "3.12"}
 	}
 	for _, py := range versions {
-		if evalMarkerForPython(marker, py, plat) {
-			return true
+		for _, plat := range plats {
+			if evalMarkerForPython(marker, py, plat) {
+				return true
+			}
 		}
 	}
 	return false
@@ -185,17 +195,10 @@ func evalMarkerAtom(atom, py, plat string) bool {
 		return evalVersionCmp(atom, "python_full_version", py+".0")
 	}
 	if strings.Contains(low, "sys_platform") {
-		return evalStrCmp(atom, "sys_platform", plat)
+		return evalStrCmp(atom, "sys_platform", markerSysPlatform(plat))
 	}
 	if strings.Contains(low, "platform_system") {
-		sys := "Linux"
-		switch plat {
-		case "win32":
-			sys = "Windows"
-		case "darwin":
-			sys = "Darwin"
-		}
-		return evalStrCmp(atom, "platform_system", sys)
+		return evalStrCmp(atom, "platform_system", markerPlatformSystem(plat))
 	}
 	// 未知原子：保守保留
 	return true
@@ -291,16 +294,31 @@ func normalizePy(s string) string {
 }
 
 func normalizePlat(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	switch s {
-	case "windows", "win", "win32":
+	if p := config.NormalizeTargetPlatform(s); p != "" {
+		return p
+	}
+	return "linux"
+}
+
+// markerSysPlatform 将组织目标平台映射为 PEP 508 sys_platform。
+func markerSysPlatform(plat string) string {
+	switch normalizePlat(plat) {
+	case "win32", "win-arm":
 		return "win32"
-	case "macos", "mac", "darwin", "osx":
+	case "darwin", "darwin-arm":
 		return "darwin"
 	default:
-		if s == "" {
-			return "linux"
-		}
-		return s
+		return "linux"
+	}
+}
+
+func markerPlatformSystem(plat string) string {
+	switch normalizePlat(plat) {
+	case "win32", "win-arm":
+		return "Windows"
+	case "darwin", "darwin-arm":
+		return "Darwin"
+	default:
+		return "Linux"
 	}
 }

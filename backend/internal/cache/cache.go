@@ -235,13 +235,13 @@ func (m *Manager) Get(key string) (*Entry, bool) {
 		m.dirty = true
 		return nil, false
 	}
-	// TTL 按 CreatedAt 过期（保证内容新鲜度，不因访问续期）；淘汰另按 LastAccess。
-	// 过期时不立即删除：留给 GetStale 用于条件请求续期，由后续 Put 覆盖或淘汰清理。
-	if entry.TTLSeconds > 0 && time.Since(entry.CreatedAt) > time.Duration(entry.TTLSeconds)*time.Second {
-		m.misses++
-		m.dirty = true
-		return nil, false
-	}
+		// TTL：index/metadata 按 CreatedAt 过期；package 制品（wheel/sdist）内容不可变，
+		// 不按 TTL 失效，仅靠容量淘汰。过期 index 不立即删除，留给 GetStale 条件续期。
+		if entry.Kind != "package" && entry.TTLSeconds > 0 && time.Since(entry.CreatedAt) > time.Duration(entry.TTLSeconds)*time.Second {
+			m.misses++
+			m.dirty = true
+			return nil, false
+		}
 	if _, err := os.Stat(entry.FilePath); err != nil {
 		_ = m.deleteLocked(key)
 		m.misses++
@@ -394,6 +394,9 @@ func moveFile(src, dst string) error {
 }
 
 func (m *Manager) PutBytes(key string, body []byte, contentType string, ttlSeconds int, meta Meta) (*Entry, error) {
+	if err := os.MkdirAll(m.dir, 0o755); err != nil {
+		return nil, err
+	}
 	tmp := filepath.Join(m.dir, "tmp_"+safeCacheKey(key))
 	if err := os.WriteFile(tmp, body, 0o644); err != nil {
 		return nil, err

@@ -48,13 +48,13 @@ type ServerConfig struct {
 	PublicHost string `json:"-"`
 }
 
-type CacheConfig struct {
-	Dir               string  `json:"dir"`
-	MaxSizeGB         float64 `json:"max_size_gb"`
-	IndexTTLSeconds   int     `json:"index_ttl_seconds"`
-	PackageTTLSeconds int     `json:"package_ttl_seconds"`
-	ChunkTTLHours     int     `json:"chunk_ttl_hours"`
-}
+	type CacheConfig struct {
+		Dir               string  `json:"dir"`
+		MaxSizeGB         float64 `json:"max_size_gb"`
+		IndexTTLSeconds   int     `json:"index_ttl_seconds"`
+		PackageTTLSeconds int     `json:"package_ttl_seconds"` // 0=永不过期（推荐；wheel/sdist 不可变）
+		ChunkTTLHours     int     `json:"chunk_ttl_hours"`
+	}
 
 type SchedulerConfig struct {
 	Prefetch       PrefetchConfig       `json:"prefetch"`
@@ -62,15 +62,16 @@ type SchedulerConfig struct {
 }
 
 type PrefetchConfig struct {
-	IdleQuotaRatio float64  `json:"idle_quota_ratio"`
-	OnInteractive  string   `json:"on_interactive"`
-	ResumeOnIdle   bool     `json:"resume_on_idle"`
-	ArtifactMode   string   `json:"artifact_mode"`    // portable | all；默认 portable
-	ExtraWheelTags []string `json:"extra_wheel_tags"` // 组织预热标签子串，非本机
-	TargetPython   []string `json:"target_python"`    // 目标 Python 版本列表，如 ["3.10","3.12"]
-	TargetPlatform string   `json:"target_platform"`  // linux / win32 / darwin
-	MaxDepth       int      `json:"max_depth"`        // 依赖闭包深度；0=仅根包不展开
-	MaxPackages    int      `json:"max_packages"`     // 依赖闭包包数上限
+	IdleQuotaRatio  float64  `json:"idle_quota_ratio"`
+	OnInteractive   string   `json:"on_interactive"`
+	ResumeOnIdle    bool     `json:"resume_on_idle"`
+	ArtifactMode    string   `json:"artifact_mode"`    // portable | all；默认 portable
+	ExtraWheelTags  []string `json:"extra_wheel_tags"` // 组织预热标签子串，非本机
+	TargetPython    []string `json:"target_python"`    // 目标 Python 版本列表，如 ["3.10","3.12"]
+	TargetPlatforms []string `json:"target_platforms"` // 多选：linux / linux-arm / win32 / win-arm / darwin / darwin-arm
+	TargetPlatform  string   `json:"target_platform"`  // 兼容旧单值；加载时并入 TargetPlatforms
+	MaxDepth        int      `json:"max_depth"`        // 依赖闭包深度；0=仅根包不展开
+	MaxPackages     int      `json:"max_packages"`     // 依赖闭包包数上限
 }
 
 // TargetPythonVersions 返回配置的目标 Python 版本列表；空则返回默认 ["3.10","3.11","3.12"]。
@@ -79,6 +80,11 @@ func (p PrefetchConfig) TargetPythonVersions() []string {
 		return p.TargetPython
 	}
 	return []string{"3.10", "3.11", "3.12"}
+}
+
+// TargetPlatformList 返回规范化后的目标平台多选列表。
+func (p PrefetchConfig) TargetPlatformList() []string {
+	return NormalizeTargetPlatforms(append(append([]string{}, p.TargetPlatforms...), splitPlatformField(p.TargetPlatform)...))
 }
 
 type SmallFileBoostConfig struct {
@@ -312,22 +318,23 @@ func merge(boot Bootstrap, rt RuntimeSettings) Config {
 func defaultRuntime() RuntimeSettings {
 	return RuntimeSettings{
 		UpstreamProxy: "",
-		Cache: CacheConfig{
-			MaxSizeGB:         100,
-			IndexTTLSeconds:   300,
-			PackageTTLSeconds: 604800,
-			ChunkTTLHours:     48,
-		},
+			Cache: CacheConfig{
+				MaxSizeGB:         100,
+				IndexTTLSeconds:   604800, // 7 天
+				PackageTTLSeconds: 0,       // 制品永不过期
+				ChunkTTLHours:     48,
+			},
 		Scheduler: SchedulerConfig{
 			Prefetch: PrefetchConfig{
 				IdleQuotaRatio: 0.3,
 				OnInteractive:  "pause",
 				ResumeOnIdle:   true,
 				ArtifactMode:   "portable",
-				TargetPython:   []string{"3.10", "3.11", "3.12"},
-				TargetPlatform: defaultTargetPlatform(),
-				MaxDepth:       5,
-				MaxPackages:    200,
+				TargetPython:    []string{"3.10", "3.11", "3.12"},
+				TargetPlatforms: []string{defaultTargetPlatform()},
+				TargetPlatform:  defaultTargetPlatform(),
+				MaxDepth:        5,
+				MaxPackages:     200,
 			},
 			SmallFileBoost: SmallFileBoostConfig{Enabled: true, MaxSizeKB: 512},
 		},
@@ -362,15 +369,16 @@ func applyDefaults(cfg *Config) {
 	if cfg.Cache.MaxSizeGB <= 0 {
 		cfg.Cache.MaxSizeGB = 100
 	}
-	if cfg.Cache.IndexTTLSeconds <= 0 {
-		cfg.Cache.IndexTTLSeconds = 300
-	}
-	if cfg.Cache.PackageTTLSeconds <= 0 {
-		cfg.Cache.PackageTTLSeconds = 604800
-	}
-	if cfg.Cache.ChunkTTLHours <= 0 {
-		cfg.Cache.ChunkTTLHours = 48
-	}
+		if cfg.Cache.IndexTTLSeconds <= 0 {
+			cfg.Cache.IndexTTLSeconds = 604800 // 7 天
+		}
+		// PackageTTLSeconds：0=永不过期；负值夹成 0。制品在 cache.Get 对 kind=package 亦不按 TTL 失效。
+		if cfg.Cache.PackageTTLSeconds < 0 {
+			cfg.Cache.PackageTTLSeconds = 0
+		}
+		if cfg.Cache.ChunkTTLHours <= 0 {
+			cfg.Cache.ChunkTTLHours = 48
+		}
 	if cfg.Scheduler.Prefetch.IdleQuotaRatio <= 0 {
 		cfg.Scheduler.Prefetch.IdleQuotaRatio = 0.3
 	}
@@ -383,7 +391,12 @@ func applyDefaults(cfg *Config) {
 	if len(cfg.Scheduler.Prefetch.TargetPython) == 0 {
 		cfg.Scheduler.Prefetch.TargetPython = []string{"3.10", "3.11", "3.12"}
 	}
-	if cfg.Scheduler.Prefetch.TargetPlatform == "" {
+	// 旧单值 target_platform → target_platforms；并规范化
+	cfg.Scheduler.Prefetch.TargetPlatforms = cfg.Scheduler.Prefetch.TargetPlatformList()
+	if len(cfg.Scheduler.Prefetch.TargetPlatforms) > 0 {
+		cfg.Scheduler.Prefetch.TargetPlatform = cfg.Scheduler.Prefetch.TargetPlatforms[0]
+	} else {
+		cfg.Scheduler.Prefetch.TargetPlatforms = []string{defaultTargetPlatform()}
 		cfg.Scheduler.Prefetch.TargetPlatform = defaultTargetPlatform()
 	}
 	// max_depth=0 表示仅根包；负值才回退默认
@@ -458,6 +471,67 @@ func applyDefaults(cfg *Config) {
 
 func defaultTargetPlatform() string {
 	return "linux"
+}
+
+func splitPlatformField(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|' || r == '\n'
+	})
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// NormalizeTargetPlatforms 规范化并去重目标平台；空输入回退 linux。
+func NormalizeTargetPlatforms(in []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, raw := range in {
+		p := NormalizeTargetPlatform(raw)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return []string{defaultTargetPlatform()}
+	}
+	return out
+}
+
+// NormalizeTargetPlatform 将别名归一为：linux / linux-arm / win32 / win-arm / darwin / darwin-arm。
+func NormalizeTargetPlatform(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "_", "-")
+	switch s {
+	case "", "linux", "linux-amd64", "linux-x86-64", "linux-x64", "manylinux":
+		return "linux"
+	case "linux-arm", "linux-aarch64", "linux-arm64", "aarch64", "arm64", "armv7", "armv7l":
+		return "linux-arm"
+	case "win", "win32", "windows", "win-amd64", "win-x64":
+		return "win32"
+	case "win-arm", "win-arm64", "windows-arm", "windows-arm64":
+		return "win-arm"
+	case "macos", "mac", "darwin", "osx", "macosx", "darwin-amd64", "darwin-x64":
+		return "darwin"
+	case "darwin-arm", "darwin-arm64", "macos-arm", "macos-arm64", "macosx-arm64", "osx-arm64":
+		return "darwin-arm"
+	default:
+		return ""
+	}
 }
 
 func envOr(key, fallback string) string {

@@ -32,7 +32,7 @@ const form = reactive({
   artifact_mode: 'portable',
   extra_wheel_tags: [] as string[],
   target_python: [] as string[],
-  target_platform: 'linux',
+  target_platforms: ['linux'] as string[],
   max_depth: 5,
   max_packages: 200,
 })
@@ -139,7 +139,14 @@ async function load() {
       form.target_python = Array.isArray(sch.prefetch?.target_python)
         ? sch.prefetch.target_python
         : []
-      form.target_platform = sch.prefetch?.target_platform || 'linux'
+      const plats = sch.prefetch?.target_platforms
+      if (Array.isArray(plats) && plats.length) {
+        form.target_platforms = [...plats]
+      } else if (sch.prefetch?.target_platform) {
+        form.target_platforms = [sch.prefetch.target_platform]
+      } else {
+        form.target_platforms = ['linux']
+      }
       form.max_depth = sch.prefetch?.max_depth ?? 5
       form.max_packages = sch.prefetch?.max_packages ?? 200
     }
@@ -175,7 +182,8 @@ async function save() {
             artifact_mode: form.artifact_mode,
             extra_wheel_tags: form.extra_wheel_tags,
             target_python: form.target_python,
-            target_platform: form.target_platform,
+            target_platforms: form.target_platforms.length ? [...form.target_platforms] : ['linux'],
+            target_platform: form.target_platforms[0] || 'linux',
             max_depth: form.max_depth,
             max_packages: form.max_packages,
           },

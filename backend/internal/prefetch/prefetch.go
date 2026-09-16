@@ -97,7 +97,7 @@ func (s *Service) drainManual(ctx context.Context) {
 }
 
 func (s *Service) failResolve(item string, err error) {
-	taskID := s.sched.Begin("pypi", item, scheduler.PriorityPrefetch, false)
+	taskID := s.sched.Begin("pypi", item, scheduler.PriorityPrefetch, false, false)
 	s.sched.MarkRunning(taskID)
 	s.sched.End(taskID, err)
 	s.log.Warn("prefetch resolve failed", zap.String("item", item), zap.Error(err))
@@ -109,7 +109,8 @@ func (s *Service) expandItem(ctx context.Context, item string) ([]string, error)
 	}
 	cfg := s.cfg.Get()
 	pf := cfg.Scheduler.Prefetch
-	env := pypihandler.TargetEnv{Python: pf.TargetPythonVersions(), Platform: pf.TargetPlatform}
+	plats := pf.TargetPlatformList()
+	env := pypihandler.TargetEnv{Python: pf.TargetPythonVersions(), Platforms: plats}
 
 	type node struct {
 		spec  string
@@ -216,14 +217,15 @@ func (s *Service) resolvePackageFiles(ctx context.Context, req *pypihandler.Requ
 		return nil, "", fmt.Errorf("%s（索引 %s）: %w", req.Raw, indexURL, err)
 	}
 	tags := mergeWheelTags(pf)
-	filtered := pypihandler.FilterArtifacts(matched, pf.ArtifactMode, tags, pf.TargetPlatform)
+	plats := pf.TargetPlatformList()
+	filtered := pypihandler.FilterArtifacts(matched, pf.ArtifactMode, tags, plats)
 	if len(filtered) == 0 {
 		if len(matched) == 0 {
 			return nil, "", fmt.Errorf("未找到匹配文件")
 		}
 		return nil, "", fmt.Errorf(
-			"未找到匹配文件（版本 %s 有 %d 个发行文件，均不符合预取策略 mode=%s python=%v tags=%v platform=%s；可在「平台与上游」调整目标 Python/平台、补充额外 wheel 标签，或改用 artifact_mode=all）",
-			ver, len(matched), pf.ArtifactMode, pf.TargetPythonVersions(), tags, pf.TargetPlatform,
+			"未找到匹配文件（版本 %s 有 %d 个发行文件，均不符合预取策略 mode=%s python=%v tags=%v platforms=%v；可在「平台与上游」调整目标 Python/平台、补充额外 wheel 标签，或改用 artifact_mode=all）",
+			ver, len(matched), pf.ArtifactMode, pf.TargetPythonVersions(), tags, plats,
 		)
 	}
 	s.log.Info("prefetch selected version",
@@ -233,6 +235,7 @@ func (s *Service) resolvePackageFiles(ctx context.Context, req *pypihandler.Requ
 		zap.String("mode", pf.ArtifactMode),
 		zap.Strings("python", pf.TargetPythonVersions()),
 		zap.Strings("tags", tags),
+		zap.Strings("platforms", plats),
 	)
 	metaURL = pickMetadataURL(filtered)
 	return filtered, metaURL, nil
@@ -369,7 +372,7 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 		}()
 		cfg := s.cfg.Get()
 		pypi := cfg.Platforms["pypi"]
-		taskID := s.sched.Begin("pypi", rawURL, scheduler.PriorityPrefetch, false)
+		taskID := s.sched.Begin("pypi", rawURL, scheduler.PriorityPrefetch, false, false)
 		_, err := s.dl.GetOrDownload(cctx, downloader.Options{
 			URL:            rawURL,
 			SourceURL:      rawURL,

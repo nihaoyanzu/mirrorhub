@@ -84,7 +84,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	cw := &traffic.CountWriter{ResponseWriter: w, Rec: s.traffic}
 	strategy := string(m.Strategy)
-	taskID := s.sched.Begin(m.Platform, m.TargetURL, prio, boost)
+	// 仅制品下载占用交互槽并暂停预取；索引/metadata 短请求不触发 pause 抖动
+	holdInteractive := prio == scheduler.PriorityInteractive && !m.IsIndex && !m.IsMetadata
+	taskID := s.sched.Begin(m.Platform, m.TargetURL, prio, boost, holdInteractive)
 	onAcquired := func() { s.sched.MarkRunning(taskID) }
 	onProgress := func(done, total int64) { s.sched.UpdateProgress(taskID, done, total) }
 	var taskErr error
