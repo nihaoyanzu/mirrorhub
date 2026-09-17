@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -365,20 +366,28 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 			}
 			defer pl.ReleaseConn()
 
+			// 分片内断点续传：pause/瞬时错误后从已写入偏移继续，不回退总进度
+			cur := ch.start
 			var lastErr error
-			for attempt := 0; attempt < 3; attempt++ {
+			for attempt := 0; attempt < 5; attempt++ {
+				if cur > ch.end {
+					break
+				}
+				if attempt > 0 {
+					if _, err := e.waitPrefetchGate(gctx, pl, opt); err != nil {
+						return err
+					}
+				}
 				var got int64
-				err := e.fetchChunk(gctx, pl, opt, f, ch.start, ch.end, func(n int64) {
+				err := e.fetchChunk(gctx, pl, opt, f, cur, ch.end, func(n int64) {
 					got += n
 					onBytes(n)
 				})
 				if err != nil {
-					if got > 0 {
-						notifyProgress(opt, downloaded.Add(-got), size)
-					}
+					cur += got
 					lastErr = err
 					if errors.Is(err, errPrefetchReconnect) || isTransientNetErr(err) {
-						time.Sleep(time.Duration(1<<attempt) * time.Second)
+						time.Sleep(time.Duration(1<<min(attempt, 3)) * 200 * time.Millisecond)
 						continue
 					}
 					return err
@@ -423,39 +432,74 @@ func (e *Engine) download(ctx context.Context, opt Options) (*Result, error) {
 
 // downloadSerial 单连接整包下载（上游未提供 Content-Length 时使用）
 func (e *Engine) downloadSerial(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, ct, strategy string) (*Result, error) {
+	tmp := e.cache.TempPath(opt.CacheKey + ".serial")
 	var last error
-	for attempt := 0; attempt < 3; attempt++ {
-		res, err := e.downloadSerialOnce(ctx, pl, opt, ct, strategy)
+	for attempt := 0; attempt < 5; attempt++ {
+		res, err := e.downloadSerialOnce(ctx, pl, opt, ct, strategy, tmp)
 		if err == nil {
 			return res, nil
 		}
 		last = err
 		if !errors.Is(err, errPrefetchReconnect) && !isTransientNetErr(err) {
+			_ = os.Remove(tmp)
 			return nil, err
 		}
 		select {
 		case <-ctx.Done():
+			_ = os.Remove(tmp)
 			return nil, ctx.Err()
-		case <-time.After(time.Duration(1<<attempt) * time.Second):
+		case <-time.After(time.Duration(1<<min(attempt, 3)) * 200 * time.Millisecond):
 		}
 	}
+	_ = os.Remove(tmp)
 	return nil, last
 }
 
-func (e *Engine) downloadSerialOnce(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, ct, strategy string) (*Result, error) {
+func (e *Engine) downloadSerialOnce(ctx context.Context, pl *ratelimit.PlatformLimiter, opt Options, ct, strategy, tmp string) (*Result, error) {
 	if err := pl.AcquireConn(ctx, !opt.Prefetch); err != nil {
 		return nil, err
 	}
 	defer pl.ReleaseConn()
 
-	resp, err := e.doGET(ctx, http.MethodGet, opt.URL, opt.Headers, 3)
+	var have int64
+	if st, err := os.Stat(tmp); err == nil {
+		have = st.Size()
+		if have < 0 {
+			have = 0
+		}
+	}
+
+	headers := cloneHeader(opt.Headers)
+	if have > 0 {
+		if headers == nil {
+			headers = http.Header{}
+		}
+		headers.Set("Range", fmt.Sprintf("bytes=%d-", have))
+	}
+
+	resp, err := e.doGET(ctx, http.MethodGet, opt.URL, headers, 3)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
+
+	// 续传：要 206；若上游忽略 Range 回 200，则从头重写
+	restart := false
+	switch {
+	case resp.StatusCode == http.StatusPartialContent && have > 0:
+		// ok
+	case resp.StatusCode >= 200 && resp.StatusCode < 300 && have == 0:
+		// ok full body
+	case resp.StatusCode >= 200 && resp.StatusCode < 300 && have > 0:
+		restart = true
+		have = 0
+	default:
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("upstream %s", resp.Status)
+		}
 		return nil, fmt.Errorf("upstream %s", resp.Status)
 	}
+
 	if ct == "" {
 		ct = resp.Header.Get("Content-Type")
 	}
@@ -466,9 +510,10 @@ func (e *Engine) downloadSerialOnce(ctx context.Context, pl *ratelimit.PlatformL
 		ct = "application/octet-stream"
 	}
 
-	tmp := e.cache.TempPath(opt.CacheKey + ".serial")
-	_ = os.Remove(tmp)
-	f, err := os.Create(tmp)
+	if restart {
+		_ = os.Remove(tmp)
+	}
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -479,6 +524,13 @@ func (e *Engine) downloadSerialOnce(ctx context.Context, pl *ratelimit.PlatformL
 			_ = os.Remove(tmp)
 		}
 	}()
+	if have > 0 {
+		if _, err := f.Seek(have, io.SeekStart); err != nil {
+			return nil, err
+		}
+	} else if err := f.Truncate(0); err != nil {
+		return nil, err
+	}
 
 	idle := 0.3
 	if e.idleRatio != nil {
@@ -493,30 +545,56 @@ func (e *Engine) downloadSerialOnce(ctx context.Context, pl *ratelimit.PlatformL
 		traffic:  e.traffic,
 		allow:    e.prefetchAllow(opt),
 	}
+
 	total := resp.ContentLength
-	if total > 0 {
-		notifyProgress(opt, 0, total)
+	if have > 0 && resp.StatusCode == http.StatusPartialContent {
+		// Content-Length 为剩余长度
+		if total > 0 {
+			total = have + total
+		}
 	}
-	var done atomic.Int64
+	if cr := resp.Header.Get("Content-Range"); have > 0 && total <= 0 {
+		// bytes start-end/total
+		if i := strings.LastIndexByte(cr, '/'); i >= 0 {
+			if n, err := strconv.ParseInt(cr[i+1:], 10, 64); err == nil && n > 0 {
+				total = n
+			}
+		}
+	}
+	if total > 0 {
+		notifyProgress(opt, have, total)
+	} else if have > 0 {
+		notifyProgress(opt, have, 0)
+	}
+
+	done := have
+	var doneMu sync.Mutex
 	cw := &progressWriter{
 		w: f,
 		onWrite: func(n int64) {
-			d := done.Add(n)
-			if total > 0 {
-				notifyProgress(opt, d, total)
+			doneMu.Lock()
+			done += n
+			cur, tot := done, total
+			doneMu.Unlock()
+			if tot > 0 {
+				notifyProgress(opt, cur, tot)
 			} else {
-				notifyProgress(opt, d, 0)
+				notifyProgress(opt, cur, 0)
 			}
 		},
 	}
 	n, err := io.Copy(cw, lr)
 	if err != nil {
+		// 保留已写入部分供下次 Range 续传
+		cleanup = false
 		return nil, err
 	}
 	if err := f.Close(); err != nil {
+		cleanup = false
 		return nil, err
 	}
-	notifyProgress(opt, n, n)
+	final := have + n
+	notifyProgress(opt, final, final)
 	opt.resolveExpectedDigest()
 	if err := verifyAndRemember(tmp, opt); err != nil {
 		return nil, err
@@ -531,7 +609,7 @@ func (e *Engine) downloadSerialOnce(ctx context.Context, pl *ratelimit.PlatformL
 	}
 	cleanup = false
 	_ = os.Remove(tmp)
-	return &Result{Entry: entry, ContentType: ct, Size: n, FromCache: false, Strategy: strategy}, nil
+	return &Result{Entry: entry, ContentType: ct, Size: final, FromCache: false, Strategy: strategy}, nil
 }
 
 func (e *Engine) prefetchAllow(opt Options) func() bool {
