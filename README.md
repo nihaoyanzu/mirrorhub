@@ -4,6 +4,8 @@
 
 > Intranet download & cache hub — **fetch each artifact from the public internet once**, then share it across every laptop and CI job.
 >
+> **Warm the cache while online, keep installing when offline** — built for capped egress and air-gapped windows.
+>
 > Designed for constrained egress: **smart routing · parallel chunking · interactive-first scheduling · one-box ops**
 
 **PyPI works today.** Hugging Face / npm / Docker are on the roadmap.
@@ -21,6 +23,7 @@ Corporate networks usually fail installs the same way:
 - Everyone configures their own proxy and retries — pain multiplies per machine, with **no shared on-disk cache**
 
 MirrorHub is the shared choke point that **pulls once, caches locally, and serves the LAN at full speed**.  
+Prefetch (or install once) while you have egress; **after that, clients can keep installing through the same local `index-url` with the upstream offline** — drills, isolated labs, shipboard / OT networks.  
 Need international egress? Set one **upstream proxy (HTTP/SOCKS)** on the server — not on every laptop.
 
 ---
@@ -58,16 +61,24 @@ Result: daytime installs stay snappy; nights and idle windows fill the cache.
 
 ### 4. Prefetch that respects the link
 
-Paste requirements / `pyproject` dependency lines → resolve → warm the cache ahead of the rush.  
+Paste requirements / `pyproject` dependency lines → resolve the dependency closure → warm the cache ahead of the rush.  
 Prefetch is first-class in the UI (queue, progress, batch cancel) so you can see and control backfill instead of guessing.
 
-### 5. One container, zero client sprawl
+### 5. Download first, use offline later
+
+Typical flow: **prefetch (or install once) online → artifacts on disk → keep using the same `index-url` with no upstream**.
+
+- **Wheels / sdists** serve as local HITs with no outbound calls  
+- **Indexes / metadata** that expire while upstream is down fall back to the last cached copy (`X-Cache: STALE`) so installs don’t die on a dead link  
+- Anything not cached still needs the network — warm the target platforms and closure via prefetch before you go offline (package-count cap is configurable)
+
+### 6. One container, zero client sprawl
 
 - Single image: Go binary + embedded admin UI + SQLite (or Postgres if you prefer)
 - Data on a volume (`/data`) — **update the image, keep the cache**
 - **Public setup guide** at `/` (no login): pick a local download address, copy `pip` / `uv` snippets
 
-### 6. Built to grow beyond PyPI
+### 7. Built to grow beyond PyPI
 
 Platforms are **modules** (enable, upstreams, download knobs). PyPI ships now; HF / npm / Docker plug into the same download + cache + rate plane later — one habit for the whole org.
 
@@ -92,6 +103,7 @@ Platforms are **modules** (enable, upstreams, download knobs). PyPI ships now; H
 |--|------------|----------------|
 | ⚡ | Parallel chunks | Large wheels stop wasting a single TCP stream |
 | 💾 | Local cache + TTL / size caps | Second install is LAN-speed |
+| 📴 | Download first, offline later | Warm the closure; install with upstream down |
 | 🎯 | Strategy routing | Indexes stay light; payloads go wide |
 | 📝 | Host-aware index rewrite | Clients use the address they already hit |
 | 🌐 | Server-side upstream proxy | Configure egress **once** |
@@ -181,7 +193,7 @@ docker compose up -d
 | http://localhost:18082 | Admin UI (default `admin` / `admin`) |
 | http://localhost:18082/ | **Public setup guide** (no login) — pick address, copy `pip` / `uv` |
 
-Image: `ghcr.io/nihaoyanzu/mirrorhub:latest` (or `:1.1`). Local build: `docker compose up -d --build`.
+Image: `ghcr.io/nihaoyanzu/mirrorhub:latest`. Local build: `docker compose up -d --build`.
 
 ### 2. First-time admin config
 
