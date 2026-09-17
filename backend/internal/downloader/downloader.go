@@ -928,10 +928,18 @@ func (e *Engine) FetchSimpleIndex(ctx context.Context, indexURL, platName string
 		}
 	}
 	status, respHeader, body, err := e.ProxyBytes(ctx, http.MethodGet, indexURL, nil, nil, platName, prefetch)
-	if err != nil {
-		return nil, "", err
-	}
-	if status >= 400 {
+	if err != nil || status >= 400 {
+		if ttlSeconds > 0 {
+			if stale, ok := e.cache.GetStale(cacheKey); ok {
+				data, readErr := os.ReadFile(stale.FilePath)
+				if readErr == nil {
+					return data, stale.ContentType, nil
+				}
+			}
+		}
+		if err != nil {
+			return nil, "", err
+		}
 		return nil, "", fmt.Errorf("upstream status %d", status)
 	}
 	body, _ = platform.MaybeGunzip(body)
@@ -944,4 +952,41 @@ func (e *Engine) FetchSimpleIndex(ctx context.Context, indexURL, platName string
 		})
 	}
 	return body, ct, nil
+}
+
+// FetchMetadata 拉取 PEP 658 metadata；优先新鲜缓存，上游失败时回退过期缓存。
+func (e *Engine) FetchMetadata(ctx context.Context, metaURL, platName string, ttlSeconds int, prefetch bool) ([]byte, error) {
+	cacheKey := cache.KeyFromURL(metaURL)
+	if ttlSeconds > 0 {
+		if entry, ok := e.cache.Get(cacheKey); ok {
+			return os.ReadFile(entry.FilePath)
+		}
+	}
+	status, respHeader, body, err := e.ProxyBytes(ctx, http.MethodGet, metaURL, nil, nil, platName, prefetch)
+	if err != nil || status < 200 || status >= 300 {
+		if ttlSeconds > 0 {
+			if stale, ok := e.cache.GetStale(cacheKey); ok {
+				data, readErr := os.ReadFile(stale.FilePath)
+				if readErr == nil {
+					return data, nil
+				}
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("metadata status %d url=%s", status, metaURL)
+	}
+	ct := platform.DetectContentType(respHeader.Get("Content-Type"), body)
+	if ct == "" {
+		ct = "text/plain"
+	}
+	if ttlSeconds > 0 {
+		_, _ = e.cache.PutBytes(cacheKey, body, ct, ttlSeconds, cache.Meta{
+			SourceURL:    metaURL,
+			Kind:         "metadata",
+			UpstreamETag: respHeader.Get("ETag"),
+		})
+	}
+	return body, nil
 }

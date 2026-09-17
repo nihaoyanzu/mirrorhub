@@ -128,9 +128,6 @@ func (s *Service) expandItem(ctx context.Context, item string) ([]string, error)
 		}
 		cur := queue[0]
 		queue = queue[1:]
-		if cur.depth > pf.MaxDepth {
-			continue
-		}
 		req, err := pypihandler.ParseRequirement(cur.spec)
 		if err != nil {
 			if cur.depth == 0 {
@@ -166,15 +163,13 @@ func (s *Service) expandItem(ctx context.Context, item string) ([]string, error)
 			allURLs = append(allURLs, u)
 		}
 
-		if cur.depth >= pf.MaxDepth || metaURL == "" {
-			if cur.depth < pf.MaxDepth && metaURL == "" {
-				s.log.Warn("prefetch skip deps: no metadata URL",
-					zap.String("spec", cur.spec),
-					zap.Int("files", len(files)),
-					zap.Int("depth", cur.depth),
-					zap.Int("max_depth", pf.MaxDepth),
-				)
-			}
+		// 依赖深度不设上限；仅 MaxPackages 限制闭包规模。无 metadata 则无法展开依赖。
+		if metaURL == "" {
+			s.log.Warn("prefetch skip deps: no metadata URL",
+				zap.String("spec", cur.spec),
+				zap.Int("files", len(files)),
+				zap.Int("depth", cur.depth),
+			)
 			continue
 		}
 		deps, err := s.fetchRequires(ctx, metaURL, cfg)
@@ -343,12 +338,9 @@ func resolveMetadataUpstreamURL(metaOrFileURL string, pypi config.PlatformConfig
 func (s *Service) fetchRequires(ctx context.Context, metaURL string, cfg config.Config) ([]string, error) {
 	pypi := cfg.Platforms["pypi"]
 	target := resolveMetadataUpstreamURL(metaURL, pypi)
-	status, _, body, err := s.dl.ProxyBytes(ctx, http.MethodGet, target, nil, nil, "pypi", true)
+	body, err := s.dl.FetchMetadata(ctx, target, "pypi", cfg.Cache.IndexTTLSeconds, true)
 	if err != nil {
 		return nil, err
-	}
-	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("metadata status %d url=%s", status, target)
 	}
 	return pypihandler.ParseRequiresDist(body), nil
 }

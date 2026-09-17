@@ -59,8 +59,8 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 		}
 		// GET 命中：直接回本地缓存，禁止再打上游 HEAD（否则每次 HIT 都被上游探测拖慢）
 		if r.Method == http.MethodGet {
-			label, err := s.dl.ServeCachedEntry(w, entry, boost, r.Header.Get("Range"))
-			return label, "cache", err
+			label, err := s.dl.ServeCachedEntry(w, entry, boost, r.Header.Get("Range"), "HIT")
+				return label, "cache", err
 		}
 	}
 

@@ -36,7 +36,6 @@ const form = reactive({
   extra_wheel_tags: '',
   target_python: '3.10\n3.11\n3.12',
   target_platforms: ['linux'] as string[],
-  max_depth: 5,
   max_packages: 200,
   small_file_boost_enabled: true,
   small_file_boost_kb: 512,
@@ -144,7 +143,6 @@ async function load() {
       const tp = sch.prefetch?.target_python
       form.target_python = Array.isArray(tp) ? tp.join('\n') : tp || '3.10\n3.11\n3.12'
       form.target_platforms = normalizePlatforms(sch.prefetch?.target_platforms, sch.prefetch?.target_platform)
-      form.max_depth = sch.prefetch?.max_depth ?? 5
       form.max_packages = sch.prefetch?.max_packages ?? 200
       form.small_file_boost_enabled = sch.small_file_boost?.enabled !== false
       form.small_file_boost_kb = sch.small_file_boost?.max_size_kb ?? 512
@@ -182,7 +180,6 @@ async function save() {
             .filter(Boolean),
           target_platforms: form.target_platforms.length ? [...form.target_platforms] : ['linux'],
           target_platform: form.target_platforms[0] || 'linux',
-          max_depth: form.max_depth,
           max_packages: form.max_packages,
         },
         small_file_boost: {
@@ -407,10 +404,6 @@ onMounted(() => {
                 {{ t(opt.labelKey) }}
               </button>
             </div>
-          </div>
-          <div>
-            <label class="ui-label">{{ t('platform.depDepth') }}</label>
-            <input v-model.number="form.max_depth" type="number" min="0" max="20" class="ui-input" />
           </div>
           <div>
             <label class="ui-label">{{ t('platform.maxPackages') }}</label>

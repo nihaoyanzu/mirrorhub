@@ -36,48 +36,48 @@ func isHTMLContentType(ct string) bool {
 // ServePackage 交互下载：命中缓存直接回文件；未命中则流式/并行流式并写入缓存。
 func (e *Engine) ServePackage(ctx context.Context, w http.ResponseWriter, opt Options) (cacheLabel string, err error) {
 	opt.resolveExpectedDigest()
-	if entry, ok := e.cache.Get(opt.CacheKey); ok {
-		notifyAcquired(opt)
-		return serveCached(w, entry, opt.Boost, opt.RangeHeader)
-	}
-
-	for try := 0; try < 3; try++ {
-		label, done, err := e.servePackageOnce(ctx, w, opt)
-		if done {
-			return label, err
-		}
-	}
-	return "miss", fmt.Errorf("unable to acquire download slot")
-}
-
-// ServeCachedEntry 直接回已查到的缓存条目（避免二次 Get）。
-func (e *Engine) ServeCachedEntry(w http.ResponseWriter, entry *cache.Entry, boost bool, rangeHeader string) (string, error) {
-	return serveCached(w, entry, boost, rangeHeader)
-}
-
-func (e *Engine) servePackageOnce(ctx context.Context, w http.ResponseWriter, opt Options) (label string, done bool, err error) {
-	wait := &inflightWait{done: make(chan struct{}), mode: inflightModeStream}
-	actual, loaded := e.inflight.LoadOrStore(opt.CacheKey, wait)
-	if loaded {
-		sw := actual.(*inflightWait)
-		if sw.mode == inflightModeFetch && sw.cancel != nil {
-			sw.cancel()
-		}
-		select {
-		case <-ctx.Done():
-			return "na", true, ctx.Err()
-		case <-sw.done:
-		}
 		if entry, ok := e.cache.Get(opt.CacheKey); ok {
-			l, e2 := serveCached(w, entry, opt.Boost, opt.RangeHeader)
-			return l, true, e2
+			notifyAcquired(opt)
+			return serveCached(w, entry, opt.Boost, opt.RangeHeader, "HIT")
 		}
-		if sw.err == nil && sw.entry != nil {
-			l, e2 := serveCached(w, sw.entry, opt.Boost, opt.RangeHeader)
-			return l, true, e2
+
+		for try := 0; try < 3; try++ {
+			label, done, err := e.servePackageOnce(ctx, w, opt)
+			if done {
+				return label, err
+			}
 		}
-		return "", false, nil // 重试占坑
+		return "miss", fmt.Errorf("unable to acquire download slot")
 	}
+
+	// ServeCachedEntry 直接回已查到的缓存条目（避免二次 Get）。cacheLabel 空则 HIT。
+	func (e *Engine) ServeCachedEntry(w http.ResponseWriter, entry *cache.Entry, boost bool, rangeHeader, cacheLabel string) (string, error) {
+		return serveCached(w, entry, boost, rangeHeader, cacheLabel)
+	}
+
+	func (e *Engine) servePackageOnce(ctx context.Context, w http.ResponseWriter, opt Options) (label string, done bool, err error) {
+		wait := &inflightWait{done: make(chan struct{}), mode: inflightModeStream}
+		actual, loaded := e.inflight.LoadOrStore(opt.CacheKey, wait)
+		if loaded {
+			sw := actual.(*inflightWait)
+			if sw.mode == inflightModeFetch && sw.cancel != nil {
+				sw.cancel()
+			}
+			select {
+			case <-ctx.Done():
+				return "na", true, ctx.Err()
+			case <-sw.done:
+			}
+			if entry, ok := e.cache.Get(opt.CacheKey); ok {
+				l, e2 := serveCached(w, entry, opt.Boost, opt.RangeHeader, "HIT")
+				return l, true, e2
+			}
+			if sw.err == nil && sw.entry != nil {
+				l, e2 := serveCached(w, sw.entry, opt.Boost, opt.RangeHeader, "HIT")
+				return l, true, e2
+			}
+			return "", false, nil // 重试占坑
+		}
 
 	defer func() {
 		e.inflight.Delete(opt.CacheKey)
@@ -103,7 +103,10 @@ func (e *Engine) servePackageOnce(ctx context.Context, w http.ResponseWriter, op
 	return "miss", true, nil
 }
 
-func serveCached(w http.ResponseWriter, entry *cache.Entry, boost bool, rangeHeader string) (string, error) {
+func serveCached(w http.ResponseWriter, entry *cache.Entry, boost bool, rangeHeader, cacheLabel string) (string, error) {
+	if cacheLabel == "" {
+		cacheLabel = "HIT"
+	}
 	f, err := os.Open(entry.FilePath)
 	if err != nil {
 		return "na", err
@@ -123,7 +126,7 @@ func serveCached(w http.ResponseWriter, entry *cache.Entry, boost bool, rangeHea
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("ETag", etag)
-	w.Header().Set("X-Cache", "HIT")
+	w.Header().Set("X-Cache", cacheLabel)
 	w.Header().Set("X-Mirrorhub-Strategy", "cache")
 	if boost {
 		w.Header().Set("X-Mirrorhub-Boost", "1")

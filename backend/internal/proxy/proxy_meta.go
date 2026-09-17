@@ -15,12 +15,21 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, m *route
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return s.handleIndexFallbackProxy(w, r, m, prefetch, boost, onAcquired)
 	}
+
+	cacheKey := cache.KeyFromURL(m.TargetURL)
+
+	// HEAD：优先本地缓存（含过期），避免断网时透传上游失败
 	if r.Method == http.MethodHead {
+		if entry, ok := s.cache.Get(cacheKey); ok {
+			return serveMetadataHead(w, entry, boost, "HIT", onAcquired)
+		}
+		if stale, ok := s.cache.GetStale(cacheKey); ok {
+			return serveMetadataHead(w, stale, boost, "STALE", onAcquired)
+		}
 		return s.handleIndexFallbackProxy(w, r, m, prefetch, boost, onAcquired)
 	}
 
 	headers := platform.FilterRequestHeaders(r.Header)
-	cacheKey := cache.KeyFromURL(m.TargetURL)
 	opt := downloader.Options{
 		URL:           m.TargetURL,
 		SourceURL:     m.TargetURL,
@@ -41,13 +50,50 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, m *route
 	if prefetch {
 		res, err := s.dl.GetOrDownload(r.Context(), opt)
 		if err != nil {
+			if stale, ok := s.cache.GetStale(cacheKey); ok {
+				if onAcquired != nil {
+					onAcquired()
+				}
+				return s.dl.ServeCachedEntry(w, stale, boost, r.Header.Get("Range"), "STALE")
+			}
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return "miss", err
 		}
 		return serveDownloadResult(w, res, boost)
 	}
 	label, err := s.dl.ServePackage(r.Context(), w, opt)
+	if err != nil {
+		if stale, ok := s.cache.GetStale(cacheKey); ok {
+			if onAcquired != nil {
+				onAcquired()
+			}
+			return s.dl.ServeCachedEntry(w, stale, boost, r.Header.Get("Range"), "STALE")
+		}
+	}
 	return label, err
+}
+
+func serveMetadataHead(w http.ResponseWriter, entry *cache.Entry, boost bool, cacheLabel string, onAcquired func()) (string, error) {
+	if onAcquired != nil {
+		onAcquired()
+	}
+	ct := entry.ContentType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Length", strconv.FormatInt(entry.Size, 10))
+	w.Header().Set("Accept-Ranges", "bytes")
+	if entry.ETag != "" {
+		w.Header().Set("ETag", entry.ETag)
+	}
+	w.Header().Set("X-Cache", cacheLabel)
+	w.Header().Set("X-Mirrorhub-Strategy", "cache")
+	if boost {
+		w.Header().Set("X-Mirrorhub-Boost", "1")
+	}
+	w.WriteHeader(http.StatusOK)
+	return "hit", nil
 }
 
 // handleIndexFallbackProxy 非 GET 的简单透传（仍占任务槽+限速）

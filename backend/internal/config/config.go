@@ -70,8 +70,8 @@ type PrefetchConfig struct {
 	TargetPython    []string `json:"target_python"`    // 目标 Python 版本列表，如 ["3.10","3.12"]
 	TargetPlatforms []string `json:"target_platforms"` // 多选：linux / linux-arm / win32 / win-arm / darwin / darwin-arm
 	TargetPlatform  string   `json:"target_platform"`  // 兼容旧单值；加载时并入 TargetPlatforms
-	MaxDepth        int      `json:"max_depth"`        // 依赖闭包深度；0=仅根包不展开
-	MaxPackages     int      `json:"max_packages"`     // 依赖闭包包数上限
+		MaxDepth        int      `json:"max_depth"`        // 已弃用：不再限制依赖深度，仅兼容旧配置持久化
+		MaxPackages     int      `json:"max_packages"`     // 依赖闭包包数上限（唯一刹车）
 }
 
 // TargetPythonVersions 返回配置的目标 Python 版本列表；空则返回默认 ["3.10","3.11","3.12"]。
@@ -399,13 +399,13 @@ func applyDefaults(cfg *Config) {
 		cfg.Scheduler.Prefetch.TargetPlatforms = []string{defaultTargetPlatform()}
 		cfg.Scheduler.Prefetch.TargetPlatform = defaultTargetPlatform()
 	}
-	// max_depth=0 表示仅根包；负值才回退默认
-	if cfg.Scheduler.Prefetch.MaxDepth < 0 {
-		cfg.Scheduler.Prefetch.MaxDepth = 5
-	}
-	if cfg.Scheduler.Prefetch.MaxPackages <= 0 {
-		cfg.Scheduler.Prefetch.MaxPackages = 200
-	}
+		// max_depth 已弃用（不参与预取逻辑）；负值夹成 0 避免脏数据
+		if cfg.Scheduler.Prefetch.MaxDepth < 0 {
+			cfg.Scheduler.Prefetch.MaxDepth = 0
+		}
+		if cfg.Scheduler.Prefetch.MaxPackages <= 0 {
+			cfg.Scheduler.Prefetch.MaxPackages = 200
+		}
 	if cfg.Scheduler.SmallFileBoost.MaxSizeKB <= 0 {
 		cfg.Scheduler.SmallFileBoost.MaxSizeKB = 512
 	}

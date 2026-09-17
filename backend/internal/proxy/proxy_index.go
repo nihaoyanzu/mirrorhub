@@ -31,7 +31,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	// ---------- 1. 缓存命中（未过期）→ 直接返回 ----------
 	if r.Method == http.MethodGet {
 		if entry, ok := s.cache.Get(cacheKey); ok {
-			return s.serveCachedIndex(w, r, entry, plat, cfg, boost)
+			return s.serveCachedIndex(w, r, entry, plat, cfg, boost, "HIT")
 		}
 	}
 
@@ -41,8 +41,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	headers.Del("If-None-Match")
 	headers.Del("If-Modified-Since")
 
+	var staleEntry *cache.Entry
 	if r.Method == http.MethodGet {
 		if stale, ok := s.cache.GetStale(cacheKey); ok {
+			staleEntry = stale
 			result := s.doRevalidation(cacheKey, m.TargetURL, m.Platform, stale, headers, cfg.Cache.IndexTTLSeconds)
 			<-result.done
 			if result.entry != nil && len(result.body) > 0 {
@@ -69,13 +71,24 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 				_, _ = w.Write(tr.Body)
 				return "miss", nil
 			}
-			// 续期失败 → 回退到全量 GET（下面的逻辑）
+			// 续期失败 → 直接回退过期缓存（不依赖后续全量 GET）
+			return s.serveCachedIndex(w, r, stale, plat, cfg, boost, "STALE")
 		}
 	}
 
-	// ---------- 3. 全量 GET ----------
+	// ---------- 3. 全量 GET（无本地条目时）----------
 	status, respHeader, body, getErr := s.dl.ProxyBytes(r.Context(), r.Method, m.TargetURL, headers, r.Body, m.Platform, prefetch)
 	if getErr != nil {
+		if r.Method == http.MethodGet {
+			if staleEntry == nil {
+				if stale, ok := s.cache.GetStale(cacheKey); ok {
+					staleEntry = stale
+				}
+			}
+			if staleEntry != nil {
+				return s.serveCachedIndex(w, r, staleEntry, plat, cfg, boost, "STALE")
+			}
+		}
 		http.Error(w, getErr.Error(), http.StatusBadGateway)
 		return "miss", getErr
 	}
@@ -212,7 +225,11 @@ func (s *Server) serveRevalidated(w http.ResponseWriter, r *http.Request, result
 }
 
 // serveCachedIndex 从缓存响应索引请求（ETag/304、URL 改写）
-func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry *cache.Entry, plat platform.Platform, cfg config.Config, boost bool) (string, error) {
+// cacheLabel 一般为 HIT 或 STALE（过期回退）。
+func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry *cache.Entry, plat platform.Platform, cfg config.Config, boost bool, cacheLabel string) (string, error) {
+	if cacheLabel == "" {
+		cacheLabel = "HIT"
+	}
 	data, err := os.ReadFile(entry.FilePath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -224,14 +241,14 @@ func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry 
 	tr := plat.TransformIndex(data, ct, cfg, r.Header.Get("Accept"), entry.SourceURL)
 	if matchETag(r.Header.Get("If-None-Match"), tr.ETag) {
 		w.Header().Set("ETag", tr.ETag)
-		w.Header().Set("X-Cache", "HIT")
+		w.Header().Set("X-Cache", cacheLabel)
 		w.WriteHeader(http.StatusNotModified)
 		return "hit", nil
 	}
 	w.Header().Set("Content-Type", tr.ContentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(tr.Body)))
 	w.Header().Set("ETag", tr.ETag)
-	w.Header().Set("X-Cache", "HIT")
+	w.Header().Set("X-Cache", cacheLabel)
 	w.Header().Set("X-Mirrorhub-Strategy", "index")
 	if boost {
 		w.Header().Set("X-Mirrorhub-Boost", "1")
