@@ -36,6 +36,17 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
 }
 
+/** 公开页：会话失效时只清 token，不硬跳登录 */
+function isPublicLocation(pathname: string): boolean {
+  return (
+    pathname === '/' ||
+    pathname === '/guide' ||
+    pathname.startsWith('/guide/') ||
+    pathname === '/login' ||
+    pathname.startsWith('/login/')
+  )
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers || {})
   headers.set('Content-Type', 'application/json')
@@ -46,7 +57,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...init, headers })
   if (res.status === 401 && !path.includes('/login')) {
     clearToken()
-    if (!location.pathname.startsWith('/login')) {
+    const publicAPI = path.includes('/api/v1/public/')
+    if (!publicAPI && !isPublicLocation(location.pathname)) {
       location.href = '/login'
     }
     throw new Error('Unauthorized')

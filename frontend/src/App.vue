@@ -5,11 +5,14 @@ import AppShell from './AppShell.vue'
 import ToastHost from '@/components/ToastHost.vue'
 
 const route = useRoute()
+const routeReady = computed(() => route.matched.length > 0)
 const isPublic = computed(() => !!route.meta.public)
 </script>
 
 <template>
-  <RouterView v-if="isPublic" />
-  <AppShell v-else />
+  <template v-if="routeReady">
+    <RouterView v-if="isPublic" />
+    <AppShell v-else />
+  </template>
   <ToastHost />
 </template>

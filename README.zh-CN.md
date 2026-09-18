@@ -76,7 +76,7 @@ MirrorHub 不是「又一个 PyPI 镜像」，而是按内网真实装包方式�
 
 - 一个镜像：Go 二进制 + 内嵌管理台 + SQLite（也可接 Postgres）
 - 数据落 volume（`/data`）—— **换镜像保留缓存**
-- **公开说明页** `/`（免登录）：选本机下载地址，一键复制 `pip` / `uv` 命令
+- **公开说明页** `/`（免登录，默认入口）：选本机下载地址，一键复制 `pip` / `uv` 命令
 
 ### 7. 为多源扩展而留位
 
@@ -190,8 +190,8 @@ docker compose up -d
 | URL | 用途 |
 |-----|------|
 | http://localhost:18081 | 下载服务（`pip -i` / `uv`） |
-| http://localhost:18082 | 管理台（默认 `admin` / `admin`） |
-| http://localhost:18082/ | **公开说明页**（免登录）— 选地址、复制 `pip` / `uv` |
+| http://localhost:18082 | 管理台（默认 `admin` / `admin`；打开即为说明页） |
+| http://localhost:18082/login | 登录 |
 
 镜像：`ghcr.io/nihaoyanzu/mirrorhub:latest`。本地构建：`docker compose up -d --build`。
 

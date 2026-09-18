@@ -11,6 +11,8 @@ const router = createRouter({
       component: () => import('@/views/Guide.vue'),
       meta: { public: true, titleKey: 'guide.title' },
     },
+    // 兼容旧链接；说明页始终在 /
+    { path: '/guide', redirect: '/' },
     {
       path: '/login',
       name: 'login',

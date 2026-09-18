@@ -76,7 +76,7 @@ Typical flow: **prefetch (or install once) online → artifacts on disk → keep
 
 - Single image: Go binary + embedded admin UI + SQLite (or Postgres if you prefer)
 - Data on a volume (`/data`) — **update the image, keep the cache**
-- **Public setup guide** at `/` (no login): pick a local download address, copy `pip` / `uv` snippets
+- **Public setup guide** at `/` (no login; default entry): pick a local download address, copy `pip` / `uv` snippets
 
 ### 7. Built to grow beyond PyPI
 
@@ -190,8 +190,8 @@ docker compose up -d
 | URL | Role |
 |-----|------|
 | http://localhost:18081 | Download service (`pip -i` / `uv`) |
-| http://localhost:18082 | Admin UI (default `admin` / `admin`) |
-| http://localhost:18082/ | **Public setup guide** (no login) — pick address, copy `pip` / `uv` |
+| http://localhost:18082 | Admin UI (default `admin` / `admin`; opens on the guide) |
+| http://localhost:18082/login | Login |
 
 Image: `ghcr.io/nihaoyanzu/mirrorhub:latest`. Local build: `docker compose up -d --build`.
 
