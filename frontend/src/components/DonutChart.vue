@@ -80,13 +80,19 @@ const arcs = computed(() => {
     })
 })
 
-const legend = computed(() =>
-  props.slices.map((s) => ({
-    label: s.label,
-    color: s.color,
-    text: formatValue(s.value, s.display),
-  })),
-)
+const legend = computed(() => {
+  const t = total.value
+  return props.slices.map((s) => {
+    const v = Math.max(0, Number(s.value) || 0)
+    const pct = t > 0 ? (v / t) * 100 : 0
+    return {
+      label: s.label,
+      color: s.color,
+      text: formatValue(s.value, s.display),
+      pctLabel: `${pct.toFixed(1)}%`,
+    }
+  })
+})
 </script>
 
 <template>
@@ -130,11 +136,12 @@ const legend = computed(() =>
         </tspan>
       </text>
     </svg>
-    <ul class="min-w-[9rem] space-y-2 text-sm">
-      <li v-for="s in legend" :key="s.label" class="flex items-center gap-2.5 text-muted">
+    <ul class="grid w-max max-w-full grid-cols-[0.65rem_auto_4.5rem_5.75rem] items-center gap-x-1.5 gap-y-1.5 text-sm">
+      <li v-for="s in legend" :key="s.label" class="contents">
         <span class="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" :style="{ background: s.color }" />
-        <span class="text-fg">{{ s.label }}</span>
-        <span class="ml-auto font-mono tabular-nums text-fg/80">{{ s.text }}</span>
+        <span class="min-w-0 truncate text-fg">{{ s.label }}</span>
+        <span class="text-right font-mono text-xs tabular-nums" :style="{ color: s.color }">{{ s.pctLabel }}</span>
+        <span class="text-right font-mono tabular-nums" :style="{ color: s.color }">{{ s.text }}</span>
       </li>
     </ul>
   </div>

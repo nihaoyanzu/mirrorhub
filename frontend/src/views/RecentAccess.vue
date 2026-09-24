@@ -1,60 +1,78 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import EmptyState from '@/components/EmptyState.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
-import { usePagination } from '@/composables/usePagination'
-import { useStatsStore } from '@/stores/stats'
+import PageHeader from '@/components/PageHeader.vue'
+import { api } from '@/api/client'
 import { fmtBytes, fmtTime } from '@/lib/format'
 import { cacheClass, cacheKey } from '@/lib/status'
-import { MODULE_BY_ID } from '@/modules/registry'
+import { MODULE_BY_ID, moduleColor } from '@/modules/registry'
+import type { TrafficRecord } from '@/types/api'
 
 const { t } = useI18n()
-const statsStore = useStatsStore()
-const recent = computed(() => statsStore.data?.traffic?.recent ?? [])
 
+const loading = ref(false)
+const items = ref<TrafficRecord[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const platformFilter = ref('')
+const platforms = ref<string[]>([])
+let timer: number | undefined
 
-const platformOptions = computed(() => {
-  const set = new Set<string>()
-  for (const r of recent.value) {
-    const p = String(r.platform || '').trim()
-    if (p) set.add(p)
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value) || 1))
+
+async function load(silent = false) {
+  if (!silent) loading.value = true
+  try {
+    const res = await api.getAccess({
+      page: page.value,
+      page_size: pageSize.value,
+      platform: platformFilter.value || undefined,
+    })
+    items.value = res.items || []
+    total.value = res.total ?? 0
+    if (res.page && res.page > 0) page.value = res.page
+    if (res.page_size && res.page_size > 0) pageSize.value = res.page_size
+    platforms.value = res.platforms || []
+    if (page.value > pageCount.value) page.value = pageCount.value
+  } catch {
+    /* keep last */
+  } finally {
+    if (!silent) loading.value = false
   }
-  return [...set].sort((a, b) => a.localeCompare(b))
+}
+
+function go(p: number) {
+  const next = Math.min(Math.max(1, p), pageCount.value)
+  if (next === page.value) return
+  page.value = next
+  load(true)
+}
+
+watch(platformFilter, () => {
+  page.value = 1
+  load()
 })
-
-watch(platformOptions, (opts) => {
-  if (platformFilter.value && !opts.includes(platformFilter.value)) {
-    platformFilter.value = ''
-  }
-})
-
-const filtered = computed(() => {
-  const id = platformFilter.value
-  if (!id) return recent.value
-  return recent.value.filter((r) => String(r.platform || '').trim() === id)
-})
-
-const {
-  page,
-  size: pageSize,
-  total,
-  pageCount,
-  slice,
-  go,
-  reset,
-} = usePagination(filtered, 20)
-
-watch(platformFilter, () => reset())
 
 function platformLabel(id: string) {
   return MODULE_BY_ID[id]?.guideTitle || id
 }
+
+onMounted(() => {
+  load()
+  timer = window.setInterval(() => load(true), 5000)
+})
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
 </script>
 
 <template>
   <div>
+    <PageHeader :title="t('access.title')" />
+
     <section class="ui-panel overflow-hidden">
       <div class="overflow-x-auto">
         <table class="ui-table">
@@ -69,7 +87,7 @@ function platformLabel(id: string) {
                   :aria-label="t('access.platform')"
                 >
                   <option value="">{{ t('access.allPlatforms') }}</option>
-                  <option v-for="id in platformOptions" :key="id" :value="id">
+                  <option v-for="id in platforms" :key="id" :value="id">
                     {{ platformLabel(id) }}
                   </option>
                 </select>
@@ -80,10 +98,19 @@ function platformLabel(id: string) {
             </tr>
           </thead>
           <tbody v-if="total">
-            <tr v-for="(r, i) in slice" :key="`${r.at}-${r.path}-${i}`">
+            <tr v-for="(r, i) in items" :key="`${r.at}-${r.path}-${i}`">
               <td class="whitespace-nowrap text-sm text-muted">{{ fmtTime(r.at) }}</td>
               <td class="font-mono text-sm">{{ r.ip }}</td>
-              <td class="font-mono text-sm">{{ platformLabel(r.platform) || '—' }}</td>
+              <td class="text-sm">
+                <span class="inline-flex items-center gap-1.5">
+                  <span
+                    v-if="r.platform"
+                    class="ui-module-dot"
+                    :style="{ '--module-color': moduleColor(String(r.platform)) }"
+                  />
+                  {{ platformLabel(r.platform) || '—' }}
+                </span>
+              </td>
               <td class="max-w-[480px] truncate font-mono text-sm text-muted" :title="r.path">
                 {{ r.path }}
               </td>
@@ -95,7 +122,10 @@ function platformLabel(id: string) {
           </tbody>
         </table>
       </div>
-      <EmptyState v-if="!total" :title="t('access.noAccess')" />
+      <EmptyState
+        v-if="!total"
+        :title="loading ? t('common.loading') : t('access.noAccess')"
+      />
       <PaginationBar
         :page="page"
         :page-count="pageCount"

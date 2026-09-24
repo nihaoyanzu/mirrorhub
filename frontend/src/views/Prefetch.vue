@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import TaskTable from '@/components/TaskTable.vue'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 import { useQueueStore } from '@/stores/queue'
 import { isKnownModule, MODULE_BY_ID, MODULES } from '@/modules/registry'
-import type { QueueTask } from '@/types/api'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -40,18 +39,14 @@ const pastePlaceholder = computed(() => {
   return key ? t(key) : t('prefetch.placeholder')
 })
 
-const settingsTo = computed(() => `/platform?module=${moduleId.value}`)
-const cacheTo = computed(() =>
-  currentDesc.value.nav.catalog ? `/packages?module=${moduleId.value}` : '',
-)
-
-const prefetchTasks = computed(() =>
-  queueStore.tasks.filter(
-    (t: QueueTask) =>
-      (t.priority === 'P2' || t.priority === 'P1') &&
-      (!t.platform || t.platform === moduleId.value),
-  ),
-)
+function applyQueueQuery() {
+  queueStore.setQuery({
+    platform: moduleId.value,
+    priority: 'P1,P2',
+    pageSize: 15,
+  })
+  queueStore.setStatus('all')
+}
 
 const lineHint = computed(() => {
   const n = text.value.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith('#')).length
@@ -77,7 +72,7 @@ async function submit() {
   submitting.value = true
   lastSkipped.value = []
   try {
-    const res = await api.prefetch([], content)
+    const res = await api.prefetch([], content, moduleId.value)
     lastSkipped.value = res.skipped || []
     const skipTip = lastSkipped.value.length ? t('prefetch.skipped', { n: lastSkipped.value.length }) : ''
     toast.ok(t('prefetch.submitted', { n: res.enqueued }) + skipTip)
@@ -110,8 +105,13 @@ async function cancelMany(ids: string[]) {
   }
 }
 
+watch(moduleId, () => {
+  applyQueueQuery()
+})
+
 onMounted(() => {
   syncModuleFromRoute()
+  applyQueueQuery()
   queueStore.startPolling(4000)
 })
 onUnmounted(() => queueStore.stopPolling())
@@ -119,26 +119,13 @@ onUnmounted(() => queueStore.stopPolling())
 
 <template>
   <div>
-    <PageHeader
-      :title="`${t(currentDesc.labelKey)} · ${t('prefetch.title')}`"
-      :description="t('prefetch.subtitle')"
-    >
-      <template #actions>
-        <span class="ui-badge-muted">{{ t(currentDesc.labelKey) }}</span>
-        <RouterLink v-if="cacheTo" class="ui-btn" :to="cacheTo">{{ t(currentDesc.nav.catalogLabelKey) }}</RouterLink>
-        <RouterLink class="ui-btn" :to="settingsTo">{{ t('prefetch.settingsLink') }}</RouterLink>
-      </template>
-    </PageHeader>
+    <PageHeader :title="t('prefetch.title')" />
 
-    <section class="ui-panel mb-5 p-4">
-      <div class="mb-2 flex items-center justify-between gap-2">
-        <span class="ui-section-title !mb-0">
-          {{ t('prefetch.submitDeps') }}
-          <span class="ml-2 text-sm font-normal text-muted">{{ t(currentDesc.labelKey) }}</span>
-        </span>
-        <span v-if="lineHint" class="ui-badge-muted">{{ lineHint }}</span>
+    <section class="ui-panel mb-5 p-4 sm:p-5">
+      <div class="mb-3 flex items-start justify-between gap-2">
+        <p class="text-xs text-muted">{{ pasteHint }}</p>
+        <span v-if="lineHint" class="ui-badge-muted shrink-0">{{ lineHint }}</span>
       </div>
-      <p class="mb-3 text-xs text-muted">{{ pasteHint }}</p>
       <form class="space-y-3" @submit.prevent="submit">
         <textarea
           v-model="text"
@@ -160,16 +147,17 @@ onUnmounted(() => queueStore.stopPolling())
     </section>
 
     <section class="ui-panel overflow-hidden">
-      <div class="border-b border-line px-4 py-2.5">
-        <h2 class="ui-section-title !mb-0">{{ t('prefetch.taskList') }}</h2>
-      </div>
       <TaskTable
-        :tasks="prefetchTasks"
+        :tasks="queueStore.tasks"
         :loading="queueStore.loading"
         :show-priority="true"
         :empty-title="t('prefetch.noTasks')"
+        :server-page="queueStore.page"
+        :server-total="queueStore.total"
+        :server-page-size="queueStore.pageSize"
         @cancel="cancel"
         @cancel-many="cancelMany"
+        @update:page="queueStore.setPage"
       />
     </section>
   </div>

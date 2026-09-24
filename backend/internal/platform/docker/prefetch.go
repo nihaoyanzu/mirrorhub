@@ -37,7 +37,7 @@ func (p *DockerPlatform) ExpandPrefetchItem(env platform.PrefetchExpandEnv, item
 	}
 	reg := strings.TrimRight(strings.TrimSpace(pcfg.Upstream), "/")
 	if reg == "" {
-		reg = "https://registry-1.docker.io"
+		return nil, fmt.Errorf("docker 未配置上游")
 	}
 	archs := dockerhandler.DefaultTargetArchs(env.Cfg.Scheduler.Prefetch.TargetPlatformList())
 	tokens := p.tokens(env.Cfg)

@@ -10,7 +10,8 @@ import { useModulesStore } from '@/stores/modules'
 import { setLocale, type SupportedLocale } from '@/i18n'
 import { api } from '@/api/client'
 import { fmtBytes, fmtRate } from '@/lib/format'
-import { MODULES } from '@/modules/registry'
+import { MODULES, moduleColor } from '@/modules/registry'
+import ModuleIcon from '@/components/ModuleIcon.vue'
 
 const { t, locale } = useI18n()
 const route = useRoute()
@@ -26,7 +27,14 @@ const userMenuOpen = ref(false)
 
 type NavLink = { to: string; icon: string; text: string; module?: string }
 /** item=顶层单链；section=可折叠分组；module=已启用镜像模块 */
-type NavGroup = { id: string; label: string; kind: 'item' | 'section' | 'module'; links: NavLink[] }
+type NavGroup = {
+  id: string
+  label: string
+  kind: 'item' | 'section' | 'module'
+  links: NavLink[]
+  /** 模块分组专用图标（与 ModuleDescriptor.navIcon 一致） */
+  navIcon?: string
+}
 
 const navGroups = computed((): NavGroup[] => {
   const groups: NavGroup[] = [
@@ -74,6 +82,7 @@ const navGroups = computed((): NavGroup[] => {
       id: `mod-${d.id}`,
       label: t(d.labelKey),
       kind: 'module',
+      navIcon: d.navIcon,
       links,
     })
   }
@@ -118,8 +127,20 @@ function linkActive(link: NavLink): boolean {
   return path === link.to || path.startsWith(link.to + '/')
 }
 
+function collapseOtherModules(exceptId: string) {
+  for (const g of navGroups.value) {
+    if (g.kind === 'module' && g.id !== exceptId) {
+      expanded[g.id] = false
+    }
+  }
+}
+
 function toggleGroup(id: string) {
-  expanded[id] = !expanded[id]
+  const next = !expanded[id]
+  expanded[id] = next
+  if (next && id.startsWith('mod-')) {
+    collapseOtherModules(id)
+  }
 }
 
 watch(
@@ -127,7 +148,10 @@ watch(
   () => {
     ensureExpandedDefaults()
     for (const g of navGroups.value) {
-      if (groupActive(g)) expanded[g.id] = true
+      if (groupActive(g)) {
+        expanded[g.id] = true
+        if (g.kind === 'module') collapseOtherModules(g.id)
+      }
     }
   },
   { immediate: true },
@@ -137,7 +161,10 @@ watch(
   () => [route.path, route.query.module],
   () => {
     for (const g of navGroups.value) {
-      if (groupActive(g)) expanded[g.id] = true
+      if (groupActive(g)) {
+        expanded[g.id] = true
+        if (g.kind === 'module') collapseOtherModules(g.id)
+      }
     }
   },
 )
@@ -236,9 +263,12 @@ function goAccount() {
     :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
   >
     <div class="app-sidebar-brand flex h-14 shrink-0 items-center gap-2.5 px-5">
-      <img src="/favicon.svg" alt="" class="h-6 w-6 shrink-0" width="24" height="24" />
-      <div class="text-[15px] font-semibold tracking-tight text-fg">
-        mirror<span class="text-accent">hub</span>
+      <img src="/favicon.svg" alt="" class="h-7 w-7 shrink-0" width="28" height="28" />
+      <div>
+        <div class="text-[15px] font-semibold leading-tight tracking-tight text-fg">
+          mirror<span class="text-accent">hub</span>
+        </div>
+        <div class="text-[10px] font-medium uppercase tracking-[0.12em] text-muted">mirror platform</div>
       </div>
     </div>
 
@@ -280,7 +310,20 @@ function goAccount() {
             :class="{ 'is-open': expanded[g.id], 'is-active': groupActive(g) }"
             @click="toggleGroup(g.id)"
           >
-            <span class="nav-section-title">{{ g.label }}</span>
+            <span class="nav-section-title">
+              <ModuleIcon
+                v-if="g.kind === 'module' && g.navIcon"
+                :name="g.navIcon"
+                class="nav-item-icon nav-section-mod-icon"
+                :style="{ color: moduleColor(g.id.replace(/^mod-/, '')) }"
+              />
+              <span
+                v-else-if="g.kind === 'module'"
+                class="ui-module-dot"
+                :style="{ '--module-color': moduleColor(g.id.replace(/^mod-/, '')) }"
+              />
+              {{ g.label }}
+            </span>
             <svg class="nav-section-chevron" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
             </svg>
@@ -298,6 +341,12 @@ function goAccount() {
                 <path v-if="link.icon === 'dash'" d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 2c-.56 0-1.1.1-1.6.28a1 1 0 00.32 1.96A4 4 0 0110 6zm-4.32.68a1 1 0 00-1.4 0A6 6 0 006 12a1 1 0 001.96-.32A4 4 0 015.68 6.68zm8.64 0a4 4 0 01-2.32 5A1 1 0 0013.4 12a6 6 0 00.92-5.32z" />
                 <path v-else-if="link.icon === 'access'" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2H3V4zm0 4h14v8a1 1 0 01-1 1H4a1 1 0 01-1-1V8zm3 2a1 1 0 100 2h4a1 1 0 100-2H6z" />
                 <path v-else-if="link.icon === 'queue'" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm0 5a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V9zm0 5a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1v-2z" />
+                <path v-else-if="link.icon === 'pypi'" d="M10 1.5c-2.2 0-4 1.34-4 3v2.5h4.5v.75H4.4C2.5 7.75 1 9.4 1 11.5S2.5 15.25 4.4 15.25h2.1V13c0-2.2 1.7-4 3.9-4h4.5V6.5c0-1.66-1.8-3-4-3zm-2.25 2a1 1 0 110 2 1 1 0 010-2zM15.6 8.5h-2.1V11c0 2.2-1.7 4-3.9 4H5v2.5c0 1.66 1.8 3 4 3s4-1.34 4-3v-2.5H8.5V14h5.1c1.9 0 3.4-1.65 3.4-3.75S17.5 8.5 15.6 8.5zM12.25 15.5a1 1 0 110 2 1 1 0 010-2z" />
+                <path v-else-if="link.icon === 'npm'" d="M3 4h14v12H3V4zm2.5 2.5v7h3.25v-5.25H10V13.5h4.5v-7H5.5z" />
+                <path v-else-if="link.icon === 'docker'" d="M2 11.5h1.6V13H2v-1.5zm2 0h1.6V13H4v-1.5zm2 0h1.6V13H6v-1.5zm2 0h1.6V13H8v-1.5zm-4-2h1.6V11H4V9.5zm2 0h1.6V11H6V9.5zm2 0h1.6V11H8V9.5zm2 0h1.6V11h-1.6V9.5zm-4-2h1.6V9H6V7.5zm2 0h1.6V9H8V7.5zm6.2 2.2c-.2-.15-.5-.1-.7.05-.05.4-.2.75-.45 1.05-.55.7-1.45 1.1-2.55 1.1H2.4c-.35 0-.65.3-.65.65 0 2.1 1.55 4 4.05 4 1.55 0 2.85-.55 3.75-1.5.7.4 1.5.6 2.4.6 2.35 0 3.85-1.55 3.85-3.55 0-.1 0-.2-.02-.3.55-.35.9-.95.9-1.6 0-1.05-.85-1.9-1.88-1.9-.35 0-.7.1-.95.3z" />
+                <path v-else-if="link.icon === 'goproxy'" d="M10 2a8 8 0 100 16 8 8 0 000-16zm3.2 5.4l-1.1 4.2c-.15.55-.55.7-1.05.45l-1.55-.9-.75.75c-.1.1-.15.15-.3.15l.1-1.7 3.15-2.8c.15-.1 0-.2-.2-.05l-3.9 2.45-1.65-.5c-.35-.1-.4-.35.1-.55l6.4-2.45c.3-.1.55.15.45.5z" />
+                <path v-else-if="link.icon === 'huggingface'" d="M10 2a8 8 0 100 16 8 8 0 000-16zm-2.5 6.2a1.1 1.1 0 110 2.2 1.1 1.1 0 010-2.2zm5 0a1.1 1.1 0 110 2.2 1.1 1.1 0 010-2.2zM6.8 12.2c.55 1.35 1.7 2.2 3.2 2.2s2.65-.85 3.2-2.2c.1-.25-.05-.5-.3-.5H7.1c-.25 0-.4.25-.3.5z" />
+                <path v-else-if="link.icon === 'maven'" d="M10 2L3.5 5v4.5c0 4.1 2.8 7.9 6.5 8.9 3.7-1 6.5-4.8 6.5-8.9V5L10 2zm0 2.2l4.5 2.1v3.2c0 2.9-1.8 5.6-4.5 6.5-2.7-.9-4.5-3.6-4.5-6.5V6.3L10 4.2zm-1.5 3.3h3v1.5H9.8L11.5 14h-1.6L8.5 9.5z" />
                 <path v-else-if="link.icon === 'pkg'" d="M10 2l7 4v8l-7 4-7-4V6l7-4zm0 2.2L5 7.5v5l5 3 5-3v-5l-5-3.3z" />
                 <path v-else-if="link.icon === 'pf'" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12l-6-3-6 3V4z" />
                 <path v-else-if="link.icon === 'plat'" d="M10 2a8 8 0 100 16 8 8 0 000-16zm-1 4h2v4l3 2-1 1.5L9 11V6z" />
@@ -339,36 +388,43 @@ function goAccount() {
         </svg>
       </button>
 
-      <div class="hidden min-w-0 items-center gap-3.5 text-sm text-muted lg:flex">
-        <span class="flex items-center gap-1.5">
-          <svg class="h-4 w-4 text-accent" viewBox="0 0 20 20" fill="currentColor">
+      <div class="hidden min-w-0 items-center gap-2 text-sm text-muted lg:flex">
+        <span class="ui-metric">
+          <svg class="h-3.5 w-3.5 text-accent" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10 3a1 1 0 011 1v7.586l2.293-2.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L10 11.586V4a1 1 0 011-1z" />
             <path d="M4 15a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1z" />
           </svg>
-          <strong class="font-mono text-fg">{{ fmtRate(pullBps) }}</strong>
-          <span class="text-muted/60">({{ fmtBytes(pullTotal) }})</span>
+          <strong>{{ fmtRate(pullBps) }}</strong>
+          <span class="opacity-60">({{ fmtBytes(pullTotal) }})</span>
         </span>
-        <span class="flex items-center gap-1.5">
-          <svg class="h-4 w-4 text-ok" viewBox="0 0 20 20" fill="currentColor">
+        <span class="ui-metric">
+          <svg class="h-3.5 w-3.5 text-ok" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10 17a1 1 0 01-1-1V9.414l-2.293 2.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L10 9.414V16a1 1 0 01-1 1z" />
             <path d="M4 5a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1z" />
           </svg>
-          <strong class="font-mono text-fg">{{ fmtRate(shareBps) }}</strong>
-          <span class="text-muted/60">({{ fmtBytes(shareTotal) }})</span>
+          <strong>{{ fmtRate(shareBps) }}</strong>
+          <span class="opacity-60">({{ fmtBytes(shareTotal) }})</span>
         </span>
-        <span class="flex items-center gap-1.5">
-          <svg class="h-4 w-4 text-muted" viewBox="0 0 20 20" fill="currentColor">
+        <span class="ui-metric">
+          <svg class="h-3.5 w-3.5 text-muted" viewBox="0 0 20 20" fill="currentColor">
             <path d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 1v10h8V5H6zm2 2h4v1.5H8V7zm0 3h4V11.5H8V10z" />
           </svg>
-          <strong class="font-mono text-fg">{{ fmtBytes(cacheSize) }}</strong>
+          <strong>{{ fmtBytes(cacheSize) }}</strong>
         </span>
-        <span class="h-3.5 w-px bg-line" />
-        <span class="font-mono text-accent">P0 {{ p0Active }}</span>
-        <span class="font-mono" :class="p1Active ? 'text-ok' : 'text-muted'">P1 {{ p1Active }}</span>
+        <span class="ui-metric font-mono">
+          <span class="text-accent">P0 {{ p0Active }}</span>
+          <span class="opacity-40">·</span>
+          <span :class="p1Active ? 'text-ok' : ''">P1 {{ p1Active }}</span>
+        </span>
       </div>
 
       <div class="ml-auto flex items-center gap-1">
-        <button type="button" class="ui-btn-ghost !px-2 !py-1 text-xs" @click="theme.toggle()">
+        <button
+          type="button"
+          class="ui-btn-ghost !px-2.5 !py-1.5 text-xs"
+          :title="theme.isDark ? t('common.themeLight') : t('common.themeDark')"
+          @click="theme.toggle()"
+        >
           <svg v-if="theme.isDark" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10 2a1 1 0 011 1v1a1 1 0 01-2 0V3a1 1 0 011-1zm4.22 1.78a1 1 0 011.41 0l.71.71a1 1 0 01-1.41 1.41l-.71-.71a1 1 0 010-1.41zM18 9a1 1 0 010 2h-1a1 1 0 010-2h1zm-2.78 6.22a1 1 0 00-1.41 0l-.71.71a1 1 0 001.41 1.41l.71-.71a1 1 0 000-1.41zM10 16a1 1 0 011 1v1a1 1 0 01-2 0v-1a1 1 0 011-1zm-5.22-1.78a1 1 0 000-1.41l-.71-.71a1 1 0 00-1.41 1.41l.71.71a1 1 0 001.41 0zM4 11a1 1 0 010-2H3a1 1 0 010 2h1zm2.78-6.22a1 1 0 001.41 0l.71-.71A1 1 0 007.49 2.66l-.71.71a1 1 0 000 1.41zM10 7a3 3 0 100 6 3 3 0 000-6z" />
           </svg>
@@ -415,7 +471,7 @@ function goAccount() {
       </div>
     </header>
 
-    <main class="mx-auto w-full max-w-screen-2xl flex-1 px-5 py-8 sm:px-8">
+    <main class="mx-auto w-full max-w-screen-2xl flex-1 px-5 py-6 sm:px-8 sm:py-8">
       <router-view />
     </main>
   </div>

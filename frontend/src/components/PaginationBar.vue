@@ -32,17 +32,22 @@ function go(p: number) {
 </script>
 
 <template>
-  <div
-    v-if="total > 0"
-    class="flex flex-wrap items-center justify-between gap-3 border-t border-line px-4 py-3.5 text-sm text-muted"
-  >
+  <div v-if="total > 0" class="ui-pagination">
     <span>{{ hint }}</span>
-    <div v-if="pageCount > 1" class="flex items-center gap-1.5">
-      <button class="ui-btn !px-2 !py-1 text-xs" :disabled="page <= 1" @click="go(page - 1)">
+    <div v-if="pageCount > 1" class="flex items-center gap-1">
+      <button
+        type="button"
+        class="ui-btn !px-2 !py-1 text-xs"
+        :disabled="page <= 1"
+        @click="go(page - 1)"
+      >
         {{ t('pagination.prev') }}
       </button>
-      <span class="min-w-[4.5rem] text-center font-mono text-fg">{{ page }} / {{ pageCount }}</span>
+      <span class="min-w-[3.75rem] text-center font-mono text-xs tabular-nums text-fg">
+        {{ page }} / {{ pageCount }}
+      </span>
       <button
+        type="button"
         class="ui-btn !px-2 !py-1 text-xs"
         :disabled="page >= pageCount"
         @click="go(page + 1)"

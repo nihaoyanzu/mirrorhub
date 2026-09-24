@@ -19,6 +19,10 @@ const props = withDefaults(
     emptyTitle?: string
     emptyDescription?: string
     pageSize?: number
+    /** 服务端分页：传入后不再对 tasks 做客户端切片 */
+    serverPage?: number
+    serverTotal?: number
+    serverPageSize?: number
   }>(),
   {
     loading: false,
@@ -32,10 +36,33 @@ const props = withDefaults(
 const emit = defineEmits<{
   cancel: [id: string]
   cancelMany: [ids: string[]]
+  'update:page': [n: number]
 }>()
 
 const tasksRef = toRef(props, 'tasks')
-const { page, size, total, pageCount, slice, go } = usePagination(tasksRef, props.pageSize)
+const clientPager = usePagination(tasksRef, props.pageSize)
+
+const serverMode = computed(() => props.serverTotal != null)
+
+const page = computed(() => (serverMode.value ? props.serverPage || 1 : clientPager.page.value))
+const size = computed(() =>
+  serverMode.value ? props.serverPageSize || props.pageSize : clientPager.size.value,
+)
+const total = computed(() => (serverMode.value ? props.serverTotal || 0 : clientPager.total.value))
+const pageCount = computed(() =>
+  serverMode.value
+    ? Math.max(1, Math.ceil(total.value / size.value) || 1)
+    : clientPager.pageCount.value,
+)
+const slice = computed(() => (serverMode.value ? props.tasks : clientPager.slice.value))
+
+function go(p: number) {
+  if (serverMode.value) {
+    emit('update:page', p)
+    return
+  }
+  clientPager.go(p)
+}
 
 const selected = ref<Set<string>>(new Set())
 const expandedId = ref<string | null>(null)

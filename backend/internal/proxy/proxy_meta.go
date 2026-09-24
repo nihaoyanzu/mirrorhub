@@ -20,7 +20,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, m *route
 
 	// HEAD：优先本地缓存（含过期），避免断网时透传上游失败
 	if r.Method == http.MethodHead {
-		if entry, ok := s.cache.Get(cacheKey); ok {
+		if entry, ok := s.cache.Get(cacheKey, m.Platform); ok {
 			return serveMetadataHead(w, entry, boost, "HIT", onAcquired)
 		}
 		if stale, ok := s.cache.GetStale(cacheKey); ok {

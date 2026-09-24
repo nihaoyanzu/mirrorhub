@@ -13,6 +13,7 @@ import (
 	mavenhandler "github.com/livehl/mirrorhub/internal/handlers/maven"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
+	"github.com/livehl/mirrorhub/internal/platid"
 )
 
 type localItem struct {
@@ -44,63 +45,12 @@ func normalizePlatformQuery(raw string) string {
 }
 
 func entryBelongsToPlatform(e cache.Entry, platform string) bool {
-	key := strings.ToLower(e.Key)
-	src := strings.TrimSpace(e.SourceURL)
-	switch platform {
-	case "pypi":
-		_, ok := entryArtifact(e)
-		return ok
-	case "huggingface":
-		if strings.HasPrefix(key, "huggingface:") || strings.HasPrefix(key, "hf:") {
-			return true
-		}
-		if u, err := url.Parse(src); err == nil && u.Path != "" {
-			return hfhandler.IsHuggingFacePath(u.Path)
-		}
-		return false
-	case "goproxy":
-		if strings.HasPrefix(key, "goproxy:") {
-			return true
-		}
-		if u, err := url.Parse(src); err == nil && u.Path != "" {
-			return goproxyhandler.IsGoproxyPath(u.Path)
-		}
-		return false
-	case "docker":
-		if strings.HasPrefix(key, "docker:") {
-			return true
-		}
-		return dockerhandler.IsDockerBlobURL(src) || strings.Contains(src, "/v2/")
-	case "maven":
-		if strings.HasPrefix(key, "maven:") {
-			return true
-		}
-		return mavenhandler.IsMavenArtifactURL(src)
-	case "npm":
-		if strings.HasPrefix(key, "npm:") {
-			return true
-		}
-		return npmhandler.IsTarballURL(src) || looksLikeNPMPackument(src)
-	default:
-		return false
-	}
+	return platid.Belongs(platform, e.Key, e.SourceURL, e.Kind)
 }
 
-func looksLikeNPMPackument(raw string) bool {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Path == "" {
-		return false
-	}
-	p := u.Path
-	if npmhandler.IsTarballPath(p) {
-		return true
-	}
-	// packument: /pkg 或 /@scope/pkg
-	if strings.HasPrefix(p, "/@") {
-		return strings.Count(p, "/") >= 2 && !strings.Contains(p, "/-/")
-	}
-	segs := strings.Split(strings.Trim(p, "/"), "/")
-	return len(segs) == 1 && segs[0] != "" && !strings.Contains(segs[0], ".")
+// platformOfEntry 与缓存列表 / Stats.by_platform 同源归属。
+func platformOfEntry(e cache.Entry) string {
+	return platid.Of(e.Key, e.SourceURL, e.Kind)
 }
 
 func localIdentity(platform string, e cache.Entry) (name, version, filename, typ string, ok bool) {
@@ -192,20 +142,16 @@ func localIdentity(platform string, e cache.Entry) (name, version, filename, typ
 		}
 		return
 	case "maven":
-		if u, err := url.Parse(src); err == nil {
-			p := strings.Trim(u.Path, "/")
-			// group/artifact/version/file
-			parts := strings.Split(p, "/")
-			if len(parts) >= 3 {
-				ver := parts[len(parts)-2]
-				art := parts[len(parts)-3]
-				groupParts := parts[:len(parts)-3]
-				if len(groupParts) > 0 {
-					name = strings.Join(groupParts, ".") + ":" + art
-					version = ver
-					ok = true
-					return
+		if u, err := url.Parse(src); err == nil && u.Path != "" {
+			g, a, ver, isMeta, okm := mavenhandler.LayoutIdentity(u.Path)
+			if okm {
+				name = g + ":" + a
+				version = ver
+				if isMeta {
+					typ = "index"
 				}
+				ok = true
+				return
 			}
 		}
 		if c, parsed := mavenhandler.ParseCoordinate(src); parsed {

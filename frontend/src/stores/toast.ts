@@ -7,6 +7,9 @@ export interface ToastItem {
   id: number
   kind: ToastKind
   message: string
+  /** 自动关闭时长（ms），供底部倒计时动画 */
+  ms: number
+  createdAt: number
 }
 
 export const useToastStore = defineStore('toast', () => {
@@ -15,7 +18,7 @@ export const useToastStore = defineStore('toast', () => {
 
   function push(message: string, kind: ToastKind = 'info', ms = 2800) {
     const id = seq++
-    items.value.push({ id, kind, message })
+    items.value.push({ id, kind, message, ms, createdAt: Date.now() })
     window.setTimeout(() => dismiss(id), ms)
   }
 

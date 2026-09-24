@@ -31,6 +31,10 @@ func (p *PyPIPlatform) OwnsPrefetchItem(item string) bool {
 }
 
 func (p *PyPIPlatform) ExpandPrefetchItem(env platform.PrefetchExpandEnv, item string) ([]string, error) {
+	pcfg, ok := env.Cfg.Platforms["pypi"]
+	if !ok || !pcfg.Enabled {
+		return nil, fmt.Errorf("pypi 模块未启用")
+	}
 	pf := env.Cfg.Scheduler.Prefetch
 	plats := pf.TargetPlatformList()
 	targetEnv := pypihandler.TargetEnv{Python: pf.TargetPythonVersions(), Platforms: plats}
@@ -45,12 +49,6 @@ func (p *PyPIPlatform) ExpandPrefetchItem(env platform.PrefetchExpandEnv, item s
 	urlSeen := map[string]struct{}{}
 
 	for len(queue) > 0 {
-		if len(seenPkg) >= pf.MaxPackages {
-			if env.Log != nil {
-				env.Log.Warn("prefetch closure hit max packages", zap.Int("max", pf.MaxPackages))
-			}
-			break
-		}
 		cur := queue[0]
 		queue = queue[1:]
 		req, err := pypihandler.ParseRequirement(cur.spec)
@@ -123,7 +121,11 @@ func (p *PyPIPlatform) ExpandPrefetchItem(env platform.PrefetchExpandEnv, item s
 
 func resolvePackageFiles(env platform.PrefetchExpandEnv, req *pypihandler.Requirement, pf config.PrefetchConfig) (files []string, metaURL string, err error) {
 	pypi := env.Cfg.Platforms["pypi"]
-	indexURL := pypihandler.SimpleIndexURL(pypi.Upstream, req.Name)
+	upstream := strings.TrimRight(strings.TrimSpace(pypi.Upstream), "/")
+	if upstream == "" {
+		return nil, "", fmt.Errorf("pypi 未配置上游")
+	}
+	indexURL := pypihandler.SimpleIndexURL(upstream, req.Name)
 	body, _, err := env.Backend.FetchSimpleIndex(env.Ctx, indexURL, "pypi", env.Cfg.Cache.IndexTTLSeconds, true)
 	if err != nil {
 		return nil, "", err
@@ -240,7 +242,7 @@ func resolveMetadataUpstreamURL(metaOrFileURL string, pypiCfg config.PlatformCon
 		base = strings.TrimSpace(pypiCfg.FileUpstream)
 	}
 	if base == "" {
-		base = "https://files.pythonhosted.org"
+		return ""
 	}
 	base = strings.TrimRight(base, "/")
 

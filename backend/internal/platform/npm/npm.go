@@ -50,13 +50,9 @@ func MatchNPM(path string, r Routes) *router.Match {
 	if npmhandler.IsReservedProxyPath(path) {
 		return nil
 	}
-	fileUp := strings.TrimSpace(r.FileUpstream)
-	if fileUp == "" {
-		fileUp = r.Upstream
-	}
 	metaUp := strings.TrimRight(strings.TrimSpace(r.Upstream), "/")
-	fileUp = strings.TrimRight(fileUp, "/")
-	if metaUp == "" {
+	fileUp := strings.TrimRight(strings.TrimSpace(r.FileUpstream), "/")
+	if metaUp == "" || fileUp == "" {
 		return nil
 	}
 

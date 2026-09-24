@@ -40,21 +40,25 @@ function onConfirm() {
         class="fixed inset-0 z-[100] flex items-center justify-center p-4"
         @keydown.escape="onCancel"
       >
-        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="onCancel" />
+        <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px]" @click="onCancel" />
 
         <div
-          class="ui-panel relative w-full p-6 shadow-2xl"
+          class="ui-panel relative w-full p-5"
           :class="wide ? 'max-w-xl' : 'max-w-md'"
+          style="box-shadow: var(--shadow-modal)"
         >
-          <h3 v-if="title" class="mb-2 text-lg font-semibold text-fg">{{ title }}</h3>
-          <p v-if="description" class="mb-4 text-sm text-muted">{{ description }}</p>
-          <slot />
-          <div class="mt-6 flex justify-end gap-3">
-            <button class="ui-btn" @click="onCancel">
+          <h3 v-if="title" class="text-base font-semibold leading-snug text-fg">{{ title }}</h3>
+          <p v-if="description" class="mt-1.5 text-sm leading-relaxed text-muted">{{ description }}</p>
+          <div v-if="$slots.default" :class="title || description ? 'mt-3' : ''">
+            <slot />
+          </div>
+          <div class="mt-4 flex justify-end gap-2">
+            <button type="button" class="ui-btn" @click="onCancel">
               {{ cancelText || (hideConfirm ? t('common.close') : t('common.cancel')) }}
             </button>
             <button
               v-if="!hideConfirm"
+              type="button"
               :class="danger ? 'ui-btn-danger' : 'ui-btn-primary'"
               @click="onConfirm"
             >
@@ -70,11 +74,11 @@ function onConfirm() {
 <style scoped>
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.18s ease;
 }
 .modal-enter-active .ui-panel,
 .modal-leave-active .ui-panel {
-  transition: transform 0.2s ease, opacity 0.2s ease;
+  transition: transform 0.18s ease, opacity 0.18s ease;
 }
 .modal-enter-from,
 .modal-leave-to {
@@ -82,7 +86,7 @@ function onConfirm() {
 }
 .modal-enter-from .ui-panel,
 .modal-leave-to .ui-panel {
-  transform: scale(0.95);
+  transform: translateY(6px) scale(0.98);
   opacity: 0;
 }
 </style>

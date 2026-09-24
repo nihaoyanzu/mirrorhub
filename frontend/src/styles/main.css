@@ -1,43 +1,89 @@
 @import "tailwindcss";
 
-/* ── 双主题色值 ──────────────────────────────────────────── */
+/* ── 双主题 token（改色只动此处）─────────────────────────── */
 
 :root {
-  /* 深色主题（默认） */
-  --color-ink: #0c1117;
-  --color-panel: #151b23;
-  --color-panel-2: #1c2430;
-  --color-line: #2a3441;
-  --color-muted: #8b98a8;
-  --color-fg: #e8eef4;
+  /* 语义色 */
+  --color-ink: #0a0e14;
+  --color-panel: #121820;
+  --color-panel-2: #181f29;
+  --color-line: #283140;
+  --color-muted: #8490a0;
+  --color-fg: #e6ecf2;
   --color-accent: #2f9e7a;
   --color-warn: #c9a227;
   --color-danger: #d26464;
   --color-ok: #4fba78;
   --color-btn-primary-text: #062016;
   --color-btn-danger-text: #ffd0d0;
-  --color-selection: rgba(47, 158, 122, 0.35);
-  --color-glow-1: rgba(47, 158, 122, 0.08);
-  --color-glow-2: rgba(28, 50, 70, 0.35);
+  --color-selection: rgba(47, 158, 122, 0.32);
+
+  /* 氛围渐变（整套替换改 --bg-atmosphere 或 glow 即可） */
+  --bg-glow-a: rgba(47, 158, 122, 0.11);
+  --bg-glow-b: rgba(36, 68, 98, 0.32);
+  --bg-atmosphere:
+    radial-gradient(1100px 520px at 0% -5%, var(--bg-glow-a), transparent 58%),
+    radial-gradient(900px 460px at 100% 0%, var(--bg-glow-b), transparent 52%);
+
+  /* 阴影 / 圆角 */
+  --radius-panel: 0.625rem;
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.025) inset, 0 4px 16px rgba(0, 0, 0, 0.18);
+  --shadow-toast:
+    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+    0 18px 48px rgba(0, 0, 0, 0.42);
+  --shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.45);
+
+  /* 模块色（图表 / 徽章） */
+  --color-module-pypi: #4a9eef;
+  --color-module-npm: #e4572e;
+  --color-module-docker: #2bb8a8;
+  --color-module-goproxy: #5dcf6a;
+  --color-module-huggingface: #e8b020;
+  --color-module-maven: #c75b8a;
+  --color-module-other: #8a93a0;
+
   color-scheme: dark;
 }
 
 .light {
-  --color-ink: #f5f7fa;
+  /* 语义色 */
+  --color-ink: #eef1f5;
   --color-panel: #ffffff;
-  --color-panel-2: #eef1f5;
-  --color-line: #d4d9e0;
-  --color-muted: #6b7280;
-  --color-fg: #1a1e24;
-  --color-accent: #22805e;
-  --color-warn: #a67c1a;
-  --color-danger: #b84040;
-  --color-ok: #2d8f56;
+  --color-panel-2: #f3f5f8;
+  --color-line: #d0d7e0;
+  --color-muted: #5a6470;
+  --color-fg: #151a21;
+  --color-accent: #1f7a5a;
+  --color-warn: #9a6f12;
+  --color-danger: #b83838;
+  --color-ok: #247a4a;
   --color-btn-primary-text: #ffffff;
-  --color-btn-danger-text: #b84040;
-  --color-selection: rgba(34, 128, 94, 0.25);
-  --color-glow-1: rgba(34, 128, 94, 0.06);
-  --color-glow-2: rgba(160, 180, 210, 0.15);
+  --color-btn-danger-text: #b83838;
+  --color-selection: rgba(31, 122, 90, 0.2);
+
+  /* 氛围渐变 */
+  --bg-glow-a: rgba(31, 122, 90, 0.08);
+  --bg-glow-b: rgba(90, 130, 170, 0.14);
+  --bg-atmosphere:
+    radial-gradient(1100px 520px at 0% -5%, var(--bg-glow-a), transparent 58%),
+    radial-gradient(900px 460px at 100% 0%, var(--bg-glow-b), transparent 52%);
+
+  /* 阴影 */
+  --shadow-panel: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 14px rgba(15, 23, 42, 0.05);
+  --shadow-toast:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 18px 40px rgba(15, 23, 42, 0.14);
+  --shadow-modal: 0 12px 36px rgba(15, 23, 42, 0.16);
+
+  /* 模块色 */
+  --color-module-pypi: #1878c8;
+  --color-module-npm: #c93d18;
+  --color-module-docker: #1a9488;
+  --color-module-goproxy: #2a9a38;
+  --color-module-huggingface: #b8860a;
+  --color-module-maven: #a83d68;
+  --color-module-other: #6b7380;
+
   color-scheme: light;
 }
 
@@ -61,7 +107,7 @@
 @layer base {
   html {
     /* 全局放大：rem 基准（Tailwind 间距/字号随之放大） */
-    font-size: 17.5px;
+    font-size: 18px;
   }
 
   html,
@@ -71,9 +117,7 @@
   }
 
   body {
-    background-image:
-      radial-gradient(900px 420px at 0% 0%, var(--color-glow-1), transparent 55%),
-      radial-gradient(700px 360px at 100% 0%, var(--color-glow-2), transparent 50%);
+    background-image: var(--bg-atmosphere);
     background-attachment: fixed;
   }
 
@@ -92,7 +136,6 @@
     background: var(--color-selection);
   }
 
-  /* 侧栏/顶栏图标统一略放大 */
   .nav-link svg,
   .ui-btn svg,
   .ui-btn-primary svg,
@@ -105,19 +148,22 @@
 
 @layer components {
   .ui-panel {
-    @apply rounded-xl border border-line bg-panel/90 backdrop-blur-sm;
+    border-radius: var(--radius-panel);
+    border: 1px solid var(--color-line);
+    background: color-mix(in srgb, var(--color-panel) 92%, transparent);
+    backdrop-filter: blur(8px);
+    box-shadow: var(--shadow-panel);
   }
 
   .ui-input {
-    @apply w-full rounded-lg border border-line bg-ink px-3.5 py-3 text-base text-fg outline-none transition
-      placeholder:text-muted/60 focus:border-accent/70 focus:ring-1 focus:ring-accent/30;
+    @apply w-full rounded-md border border-line bg-ink px-3 py-2 text-sm text-fg outline-none transition
+      placeholder:text-muted/55 focus:border-accent/70 focus:ring-1 focus:ring-accent/25;
   }
 
   .ui-label {
-    @apply mb-2 block text-base text-muted;
+    @apply mb-1.5 block text-sm text-muted;
   }
 
-  /* 开关：隐藏原生 checkbox，用轨道 + 滑块呈现 */
   .ui-switch {
     @apply relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center;
   }
@@ -155,44 +201,49 @@
   }
 
   .ui-btn {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-line
-      bg-panel-2 px-4 py-2.5 text-base text-fg transition hover:border-accent/60 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-line
+      bg-panel-2 px-3.5 py-2 text-sm text-fg transition hover:border-accent/60 disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .ui-btn-primary {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-accent
-      bg-accent px-4 py-2.5 text-base font-semibold transition hover:brightness-110
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-accent
+      bg-accent px-3.5 py-2 text-sm font-semibold transition hover:brightness-110
       disabled:cursor-not-allowed disabled:opacity-50;
     color: var(--color-btn-primary-text);
   }
 
   .ui-btn-danger {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-danger/50
-      bg-panel-2 px-4 py-2.5 text-base transition hover:border-danger hover:bg-danger/10
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-danger/50
+      bg-panel-2 px-3.5 py-2 text-sm transition hover:border-danger hover:bg-danger/10
       disabled:cursor-not-allowed disabled:opacity-50;
     color: var(--color-btn-danger-text);
   }
 
   .ui-btn-ghost {
-    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-transparent
-      bg-transparent px-4 py-2.5 text-base text-muted transition hover:bg-panel-2 hover:text-fg
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-transparent
+      bg-transparent px-3.5 py-2 text-sm text-muted transition hover:bg-panel-2 hover:text-fg
       disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .ui-table {
-    @apply w-full border-collapse text-base;
+    @apply w-full border-collapse text-sm;
   }
 
   .ui-table th {
-    @apply border-b border-line px-3.5 py-3 text-left text-sm font-medium uppercase tracking-wide text-muted;
+    @apply border-b border-line px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted;
+    background: color-mix(in srgb, var(--color-panel-2) 55%, transparent);
   }
 
   .ui-table td {
-    @apply border-b border-line/70 px-3.5 py-3.5 align-middle;
+    @apply border-b border-line/60 px-3 py-2.5 align-middle;
   }
 
-  .ui-table tr:hover td {
-    @apply bg-panel-2/40;
+  .ui-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  .ui-table tbody tr:hover td {
+    background: color-mix(in srgb, var(--color-panel-2) 50%, transparent);
   }
 
   .ui-badge {
@@ -224,6 +275,32 @@
     @apply border-accent/50 bg-accent/15 text-fg;
   }
 
+  .ui-metric {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-line);
+    background: color-mix(in srgb, var(--color-panel-2) 70%, transparent);
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+  }
+
+  .ui-metric strong {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--color-fg);
+  }
+
+  .ui-module-dot {
+    display: inline-block;
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    background: var(--module-color, var(--color-accent));
+  }
+
   .nav-link {
     @apply flex items-center rounded-lg px-3.5 py-2.5 text-base text-muted transition
       hover:bg-panel-2 hover:text-fg;
@@ -232,8 +309,6 @@
   .nav-link.router-link-active {
     @apply bg-accent/15 font-medium text-fg ring-1 ring-accent/30;
   }
-
-  /* ── 平台侧栏 ─────────────────────────────────────────── */
 
   .app-sidebar {
     background: var(--color-panel);
@@ -254,9 +329,10 @@
     border-top: 1px solid var(--color-line);
     font-size: 0.68rem;
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     color: var(--color-muted);
-    opacity: 0.85;
+    opacity: 0.9;
   }
 
   .nav-section {
@@ -290,26 +366,35 @@
     color: var(--color-fg);
   }
 
-  /* 总览 / 系统：轻量分区标题 */
   .nav-section--section .nav-section-title {
     font-size: 0.68rem;
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     line-height: 1.3;
     color: inherit;
   }
 
-  /* 模块：产品名，正常字重 */
   .nav-section--module .nav-section-head {
     padding: 0.45rem 0.65rem;
   }
 
   .nav-section--module .nav-section-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
     font-size: 0.8125rem;
     font-weight: 600;
     letter-spacing: 0;
     line-height: 1.3;
     color: var(--color-fg);
+  }
+
+  .nav-section--module .nav-section-mod-icon {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    opacity: 0.9;
   }
 
   .nav-section--module .nav-section-head.is-active .nav-section-title {
@@ -351,7 +436,6 @@
     transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
 
-  /* 一级菜单：不套折叠分组的左边线缩进 */
   .nav-item--top {
     margin: 0 0 0.05rem;
     padding: 0.5rem 0.65rem;
@@ -406,6 +490,24 @@
 
   .ui-section-title {
     @apply mb-3.5 text-sm font-medium uppercase tracking-wider text-muted;
+  }
+
+  .page-header {
+    margin-bottom: 1.15rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .ui-pagination {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 0.75rem;
+    border-top: 1px solid var(--color-line);
+    padding: 0.65rem 0.85rem;
+    font-size: 0.8125rem;
+    color: var(--color-muted);
   }
 
   .user-menu-item {

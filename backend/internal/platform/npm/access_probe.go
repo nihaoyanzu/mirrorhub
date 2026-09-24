@@ -12,7 +12,10 @@ import (
 func (p *NPMPlatform) ProbeAccess(env platform.AccessProbeEnv) []platform.AccessProbeCheck {
 	base := strings.TrimRight(strings.TrimSpace(env.Cfg.Upstream), "/")
 	if base == "" {
-		base = "https://registry.npmmirror.com"
+		return []platform.AccessProbeCheck{{
+			Name: "metadata", OK: false, MS: 0,
+			Detail: "未配置上游",
+		}}
 	}
 
 	// 用极小包 ms 验证：先拉 packument，再下载 tarball 前缀字节

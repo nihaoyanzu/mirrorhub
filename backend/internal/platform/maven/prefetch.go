@@ -38,16 +38,8 @@ func (p *MavenPlatform) ExpandPrefetchItem(env platform.PrefetchExpandEnv, item 
 	}
 	up := strings.TrimRight(strings.TrimSpace(pcfg.FileUpstream), "/")
 	if up == "" {
-		up = strings.TrimRight(strings.TrimSpace(pcfg.Upstream), "/")
+		return nil, fmt.Errorf("maven 未配置上游")
 	}
-	if up == "" {
-		up = "https://maven.aliyun.com/repository/central"
-	}
-	maxPkg := env.Cfg.Scheduler.Prefetch.MaxPackages
-	if maxPkg <= 0 {
-		maxPkg = 200
-	}
-
 	type node struct {
 		c mavenhandler.Coordinate
 	}
@@ -68,12 +60,6 @@ func (p *MavenPlatform) ExpandPrefetchItem(env platform.PrefetchExpandEnv, item 
 	}
 
 	for len(queue) > 0 {
-		if len(seen) >= maxPkg {
-			if env.Log != nil {
-				env.Log.Warn("prefetch maven closure hit max packages", zap.Int("max", maxPkg))
-			}
-			break
-		}
 		n := queue[0]
 		queue = queue[1:]
 		key := n.c.String()

@@ -98,9 +98,16 @@ func parsePathAsRepo(path, fragment string) (RepoRef, bool) {
 		return RepoRef{}, false
 	}
 	for _, p := range parts {
-		if p == "" || strings.ContainsAny(p, "@#?") {
+		if p == "" || strings.ContainsAny(p, "@#?:") {
 			return RepoRef{}, false
 		}
+	}
+	// 本平台正规则：拒绝明显异形修订，避免与 Docker digest / Go module@version 重叠
+	if strings.HasPrefix(strings.ToLower(rev), "sha256:") {
+		return RepoRef{}, false
+	}
+	if looksLikeGoModuleRevision(parts[0], rev) {
+		return RepoRef{}, false
 	}
 	if rev == "" {
 		rev = "main"
@@ -109,6 +116,17 @@ func parsePathAsRepo(path, fragment string) (RepoRef, bool) {
 		rev = fragment
 	}
 	return RepoRef{RepoType: repoType, ID: id, Revision: rev}, true
+}
+
+// looksLikeGoModuleRevision：首段含域名点且修订为 v+数字（如 rsc.io/...@v1.5.2）。
+func looksLikeGoModuleRevision(firstSeg, rev string) bool {
+	if rev == "" || !strings.Contains(firstSeg, ".") {
+		return false
+	}
+	if len(rev) < 2 || rev[0] != 'v' || rev[1] < '0' || rev[1] > '9' {
+		return false
+	}
+	return true
 }
 
 // splitIDRevision 从 api 路径尾部剥 tree/revision 等，保留 repo id。
@@ -143,7 +161,7 @@ func splitAtRevision(s string) (id, rev string) {
 func TreeAPIURL(upstream, repoType, repoID, revision string) string {
 	base := strings.TrimRight(strings.TrimSpace(upstream), "/")
 	if base == "" {
-		base = "https://huggingface.co"
+		return ""
 	}
 	if repoType != "datasets" {
 		repoType = "models"
@@ -158,7 +176,7 @@ func TreeAPIURL(upstream, repoType, repoID, revision string) string {
 func ResolveFileURL(upstream, repoType, repoID, revision, filePath string) string {
 	base := strings.TrimRight(strings.TrimSpace(upstream), "/")
 	if base == "" {
-		base = "https://huggingface.co"
+		return ""
 	}
 	filePath = strings.TrimPrefix(filePath, "/")
 	if revision == "" {

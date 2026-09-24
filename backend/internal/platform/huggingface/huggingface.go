@@ -47,12 +47,9 @@ func MatchHuggingFace(path string, r Routes) *router.Match {
 	}
 
 	apiUp := strings.TrimRight(strings.TrimSpace(r.Upstream), "/")
-	if apiUp == "" {
-		apiUp = "https://huggingface.co"
-	}
 	fileUp := strings.TrimRight(strings.TrimSpace(r.FileUpstream), "/")
-	if fileUp == "" {
-		fileUp = apiUp
+	if apiUp == "" || fileUp == "" {
+		return nil
 	}
 
 	if hfhandler.IsPackagePath(path) {

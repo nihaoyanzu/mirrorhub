@@ -14,11 +14,17 @@ import (
 func (p *DockerPlatform) ProbeAccess(env platform.AccessProbeEnv) []platform.AccessProbeCheck {
 	base := strings.TrimRight(strings.TrimSpace(env.Cfg.Upstream), "/")
 	if base == "" {
-		base = "https://registry-1.docker.io"
+		return []platform.AccessProbeCheck{{
+			Name: "manifest", OK: false, MS: 0,
+			Detail: "未配置上游",
+		}}
 	}
 	authBase := strings.TrimSpace(env.Cfg.MetadataUpstream)
 	if authBase == "" {
-		authBase = "https://auth.docker.io"
+		return []platform.AccessProbeCheck{{
+			Name: "manifest", OK: false, MS: 0,
+			Detail: "未配置 Auth 上游",
+		}}
 	}
 
 	const repo = "library/hello-world"

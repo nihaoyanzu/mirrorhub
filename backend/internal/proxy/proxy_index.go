@@ -36,7 +36,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 
 	// ---------- 1. 缓存命中（未过期）→ 直接返回 ----------
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		if entry, ok := s.cache.Get(cacheKey); ok {
+		if entry, ok := s.cache.Get(cacheKey, m.Platform); ok {
 			return s.serveCachedIndex(w, r, entry, plat, cfg, boost, "HIT")
 		}
 	}

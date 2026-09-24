@@ -39,31 +39,36 @@ func MatchPyPI(path string, r Routes) *router.Match {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	up := strings.TrimRight(strings.TrimSpace(r.Upstream), "/")
+	fileUp := strings.TrimRight(strings.TrimSpace(r.FileUpstream), "/")
+	if up == "" || fileUp == "" {
+		return nil
+	}
 	switch {
 	case strings.HasPrefix(path, "/simple"):
 		return &router.Match{
 			Platform:       "pypi",
 			Strategy:       router.StrategyProxy,
-			UpstreamBase:   r.Upstream,
-			TargetURL:      strings.TrimRight(r.Upstream, "/") + path,
+			UpstreamBase:   up,
+			TargetURL:      up + path,
 			IsIndex:        true,
 			SmallFileBoost: true,
 		}
-	case strings.HasPrefix(path, "/packages") && strings.HasSuffix(path, ".metadata"):
-		if !pypihandler.IsPackageArtifactPath(path) {
-			return nil
-		}
-		metaUpstream := r.MetadataUpstream
-		if metaUpstream == "" {
-			metaUpstream = r.FileUpstream
-		}
-		return &router.Match{
-			Platform:     "pypi",
-			Strategy:     router.StrategyProxy,
-			UpstreamBase: metaUpstream,
-			TargetURL:    strings.TrimRight(metaUpstream, "/") + path,
-			IsMetadata:   true,
-		}
+		case strings.HasPrefix(path, "/packages") && strings.HasSuffix(path, ".metadata"):
+			if !pypihandler.IsPackageArtifactPath(path) {
+				return nil
+			}
+			metaUpstream := strings.TrimRight(strings.TrimSpace(r.MetadataUpstream), "/")
+			if metaUpstream == "" {
+				return nil
+			}
+			return &router.Match{
+				Platform:     "pypi",
+				Strategy:     router.StrategyProxy,
+				UpstreamBase: metaUpstream,
+				TargetURL:    metaUpstream + path,
+				IsMetadata:   true,
+			}
 	case strings.HasPrefix(path, "/packages"):
 		// 仅发行文件；裸 /packages 或目录页会命中上游 HTML 浏览页，一律不代理
 		if !pypihandler.IsPackageArtifactPath(path) {
@@ -72,8 +77,8 @@ func MatchPyPI(path string, r Routes) *router.Match {
 		return &router.Match{
 			Platform:     "pypi",
 			Strategy:     router.StrategyParallel,
-			UpstreamBase: r.FileUpstream,
-			TargetURL:    strings.TrimRight(r.FileUpstream, "/") + path,
+			UpstreamBase: fileUp,
+			TargetURL:    fileUp + path,
 		}
 	default:
 		return nil

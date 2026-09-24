@@ -11,7 +11,10 @@ import (
 func (p *HuggingFacePlatform) ProbeAccess(env platform.AccessProbeEnv) []platform.AccessProbeCheck {
 	base := strings.TrimRight(strings.TrimSpace(env.Cfg.Upstream), "/")
 	if base == "" {
-		base = "https://huggingface.co"
+		return []platform.AccessProbeCheck{{
+			Name: "download", OK: false, MS: 0,
+			Detail: "未配置上游",
+		}}
 	}
 	// 公开小文件：gpt2/config.json（数 KB）
 	fileURL := hfhandler.ResolveFileURL(base, "model", "gpt2", "main", "config.json")

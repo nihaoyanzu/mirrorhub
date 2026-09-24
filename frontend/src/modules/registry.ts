@@ -17,6 +17,10 @@ export interface ModuleDescriptor {
   guideDefaultEnabled: boolean
   /** 包检索页行为：pypi=目录检索；local=本地缓存浏览 */
   catalogMode: CatalogMode
+  /** CSS 变量名，如 --color-module-pypi */
+  colorVar: string
+  /** 侧栏模块符号（AppShell nav-item-icon） */
+  navIcon: string
   nav: {
     catalog: boolean
     prefetch: boolean
@@ -61,6 +65,8 @@ export const MODULES: ModuleDescriptor[] = [
     showPrefetchTab: true,
     guideDefaultEnabled: true,
     catalogMode: 'pypi',
+    colorVar: '--color-module-pypi',
+    navIcon: 'pypi',
     nav: {
       catalog: true,
       prefetch: true,
@@ -100,6 +106,8 @@ export const MODULES: ModuleDescriptor[] = [
     showPrefetchTab: true,
     guideDefaultEnabled: true,
     catalogMode: 'local',
+    colorVar: '--color-module-npm',
+    navIcon: 'npm',
     nav: {
       catalog: true,
       prefetch: true,
@@ -136,6 +144,8 @@ export const MODULES: ModuleDescriptor[] = [
     showPrefetchTab: true,
     guideDefaultEnabled: true,
     catalogMode: 'local',
+    colorVar: '--color-module-docker',
+    navIcon: 'docker',
     nav: {
       catalog: true,
       prefetch: true,
@@ -175,6 +185,8 @@ export const MODULES: ModuleDescriptor[] = [
     showPrefetchTab: true,
     guideDefaultEnabled: true,
     catalogMode: 'local',
+    colorVar: '--color-module-goproxy',
+    navIcon: 'goproxy',
     nav: {
       catalog: true,
       prefetch: true,
@@ -211,6 +223,8 @@ export const MODULES: ModuleDescriptor[] = [
     showPrefetchTab: true,
     guideDefaultEnabled: true,
     catalogMode: 'local',
+    colorVar: '--color-module-huggingface',
+    navIcon: 'huggingface',
     nav: {
       catalog: true,
       prefetch: true,
@@ -249,6 +263,8 @@ export const MODULES: ModuleDescriptor[] = [
     showPrefetchTab: true,
     guideDefaultEnabled: false,
     catalogMode: 'local',
+    colorVar: '--color-module-maven',
+    navIcon: 'maven',
     nav: {
       catalog: true,
       prefetch: true,
@@ -282,6 +298,13 @@ export const MODULES: ModuleDescriptor[] = [
 export const MODULE_BY_ID: Record<string, ModuleDescriptor> = Object.fromEntries(
   MODULES.map((d) => [d.id, d]),
 )
+
+/** 模块色 CSS 值，供图表/徽章使用 */
+export function moduleColor(id: string): string {
+  const d = MODULE_BY_ID[id]
+  if (d?.colorVar) return `var(${d.colorVar})`
+  return 'var(--color-muted)'
+}
 
 export function isKnownModule(id: string): boolean {
   return id in MODULE_BY_ID

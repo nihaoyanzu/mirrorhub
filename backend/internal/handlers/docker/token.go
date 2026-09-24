@@ -26,20 +26,16 @@ type cachedToken struct {
 	expiresAt time.Time
 }
 
-// NewTokenSource 创建换票客户端；authBase/service 空则用 Docker Hub 默认。
+// NewTokenSource 创建换票客户端；httpClient 空则用带超时的默认客户端。
 func NewTokenSource(authBase, service string, httpClient *http.Client) *TokenSource {
-	if strings.TrimSpace(authBase) == "" {
-		authBase = "https://auth.docker.io"
-	}
-	if strings.TrimSpace(service) == "" {
-		service = "registry.docker.io"
-	}
+	authBase = strings.TrimRight(strings.TrimSpace(authBase), "/")
+	service = strings.TrimSpace(service)
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &TokenSource{
 		client:   httpClient,
-		authBase: strings.TrimRight(authBase, "/"),
+		authBase: authBase,
 		service:  service,
 		byScope:  map[string]cachedToken{},
 	}

@@ -17,6 +17,7 @@ import (
 
 	"go.etcd.io/bbolt"
 
+	"github.com/livehl/mirrorhub/internal/cachekey"
 	"github.com/livehl/mirrorhub/internal/store"
 )
 
@@ -49,16 +50,19 @@ type Meta struct {
 }
 
 type Stats struct {
-	Entries       int     `json:"entries"`
-	TotalSize     int64   `json:"total_size"`
-	MaxSize       int64   `json:"max_size"`
-	Hits          int64   `json:"hits"`
-	Misses        int64   `json:"misses"`
-	UsageRatio    float64 `json:"usage_ratio"`
-	DiskFreeBytes int64   `json:"disk_free_bytes"`
-	DiskFreeOK    bool    `json:"disk_free_ok"`
-	WaterWarn     bool    `json:"water_warn"`
-	WaterCrit     bool    `json:"water_crit"`
+	Entries          int              `json:"entries"`
+	TotalSize        int64            `json:"total_size"`
+	MaxSize          int64            `json:"max_size"`
+	Hits             int64            `json:"hits"`
+	Misses           int64            `json:"misses"`
+	HitsByPlatform   map[string]int64 `json:"hits_by_platform,omitempty"`   // 各平台命中次数
+	MissesByPlatform map[string]int64 `json:"misses_by_platform,omitempty"` // 各平台未命中次数
+	UsageRatio       float64          `json:"usage_ratio"`
+	DiskFreeBytes    int64            `json:"disk_free_bytes"`
+	DiskFreeOK       bool             `json:"disk_free_ok"`
+	WaterWarn        bool             `json:"water_warn"`
+	WaterCrit        bool             `json:"water_crit"`
+	ByPlatform       map[string]int64 `json:"by_platform,omitempty"` // 各平台已用字节
 }
 
 type Manager struct {
@@ -66,8 +70,7 @@ type Manager struct {
 	maxSize int64
 	db      *bbolt.DB
 	mu      sync.Mutex
-	hits    int64
-	misses  int64
+	hit     hitCounters
 	dirty   bool
 	store   *store.Store
 	stop    chan struct{}
@@ -80,8 +83,10 @@ const (
 )
 
 type cacheCounters struct {
-	Hits   int64 `json:"hits"`
-	Misses int64 `json:"misses"`
+	Hits             int64            `json:"hits"`
+	Misses           int64            `json:"misses"`
+	HitsByPlatform   map[string]int64 `json:"hits_by_platform,omitempty"`
+	MissesByPlatform map[string]int64 `json:"misses_by_platform,omitempty"`
 }
 
 func New(dir string, maxSizeGB float64, st *store.Store) (*Manager, error) {
@@ -149,8 +154,7 @@ func (m *Manager) loadCounters() {
 		return
 	}
 	m.mu.Lock()
-	m.hits = c.Hits
-	m.misses = c.Misses
+	m.hit.load(c.Hits, c.Misses, c.HitsByPlatform, c.MissesByPlatform)
 	m.mu.Unlock()
 }
 
@@ -163,7 +167,13 @@ func (m *Manager) saveCounters() {
 		m.mu.Unlock()
 		return
 	}
-	c := cacheCounters{Hits: m.hits, Misses: m.misses}
+	hits, misses, byHit, byMiss := m.hit.snapshot()
+	c := cacheCounters{
+		Hits:             hits,
+		Misses:           misses,
+		HitsByPlatform:   byHit,
+		MissesByPlatform: byMiss,
+	}
 	m.dirty = false
 	m.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -200,8 +210,7 @@ func (m *Manager) Close() error {
 }
 
 func KeyFromURL(url string) string {
-	sum := sha256.Sum256([]byte(url))
-	return hex.EncodeToString(sum[:16])
+	return cachekey.FromURL(url)
 }
 
 func (m *Manager) filePath(key string) string {
@@ -212,7 +221,11 @@ func (m *Manager) filePath(key string) string {
 	return filepath.Join(m.dir, "objects", sk[:2], sk)
 }
 
-func (m *Manager) Get(key string) (*Entry, bool) {
+func (m *Manager) Get(key string, platformHint ...string) (*Entry, bool) {
+	hint := ""
+	if len(platformHint) > 0 {
+		hint = platformHint[0]
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var entry Entry
@@ -225,26 +238,26 @@ func (m *Manager) Get(key string) (*Entry, bool) {
 		return json.Unmarshal(v, &entry)
 	})
 	if err != nil {
-		m.misses++
+		m.hit.noteMiss(HitPlatform(hint, key, nil))
 		m.dirty = true
 		return nil, false
 	}
 	if strings.TrimSpace(entry.SourceURL) == "" || strings.TrimSpace(entry.Kind) == "" {
 		_ = m.deleteLocked(key)
-		m.misses++
+		m.hit.noteMiss(HitPlatform(hint, key, &entry))
 		m.dirty = true
 		return nil, false
 	}
-		// TTL：index/metadata 按 CreatedAt 过期；package 制品（wheel/sdist）内容不可变，
-		// 不按 TTL 失效，仅靠容量淘汰。过期 index 不立即删除，留给 GetStale 条件续期。
-		if entry.Kind != "package" && entry.TTLSeconds > 0 && time.Since(entry.CreatedAt) > time.Duration(entry.TTLSeconds)*time.Second {
-			m.misses++
-			m.dirty = true
-			return nil, false
-		}
+	// TTL：index/metadata 按 CreatedAt 过期；package 制品（wheel/sdist）内容不可变，
+	// 不按 TTL 失效，仅靠容量淘汰。过期 index 不立即删除，留给 GetStale 条件续期。
+	if entry.Kind != "package" && entry.TTLSeconds > 0 && time.Since(entry.CreatedAt) > time.Duration(entry.TTLSeconds)*time.Second {
+		m.hit.noteMiss(HitPlatform(hint, key, &entry))
+		m.dirty = true
+		return nil, false
+	}
 	if _, err := os.Stat(entry.FilePath); err != nil {
 		_ = m.deleteLocked(key)
-		m.misses++
+		m.hit.noteMiss(HitPlatform(hint, key, &entry))
 		m.dirty = true
 		return nil, false
 	}
@@ -255,7 +268,7 @@ func (m *Manager) Get(key string) (*Entry, bool) {
 	if prevAccess.IsZero() || now.Sub(prevAccess) >= 30*time.Second {
 		_ = m.putMetaLocked(&entry)
 	}
-	m.hits++
+	m.hit.noteHit(HitPlatform(hint, key, &entry))
 	m.dirty = true
 	return &entry, true
 }
@@ -435,8 +448,7 @@ func (m *Manager) Clear() error {
 	for _, k := range keys {
 		_ = m.deleteLocked(k)
 	}
-	m.hits = 0
-	m.misses = 0
+	m.hit.clear()
 	m.dirty = true
 	return nil
 }
@@ -446,6 +458,7 @@ func (m *Manager) Stats() Stats {
 	defer m.mu.Unlock()
 	var total int64
 	var n int
+	byPlat := map[string]int64{}
 	_ = m.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketMeta)
 		return b.ForEach(func(_, v []byte) error {
@@ -453,6 +466,8 @@ func (m *Manager) Stats() Stats {
 			if json.Unmarshal(v, &e) == nil {
 				total += e.Size
 				n++
+				p := ClassifyPlatform(e)
+				byPlat[p] += e.Size
 			}
 			return nil
 		})
@@ -461,18 +476,22 @@ func (m *Manager) Stats() Stats {
 	if m.maxSize > 0 {
 		ratio = float64(total) / float64(m.maxSize)
 	}
+	hits, misses, byHit, byMiss := m.hit.snapshot()
 	free, ok := diskFreeBytes(m.dir)
 	return Stats{
-		Entries:       n,
-		TotalSize:     total,
-		MaxSize:       m.maxSize,
-		Hits:          m.hits,
-		Misses:        m.misses,
-		UsageRatio:    ratio,
-		DiskFreeBytes: free,
-		DiskFreeOK:    ok,
-		WaterWarn:     ratio >= 0.80,
-		WaterCrit:     ratio >= 0.92,
+		Entries:          n,
+		TotalSize:        total,
+		MaxSize:          m.maxSize,
+		Hits:             hits,
+		Misses:           misses,
+		HitsByPlatform:   byHit,
+		MissesByPlatform: byMiss,
+		UsageRatio:       ratio,
+		DiskFreeBytes:    free,
+		DiskFreeOK:       ok,
+		WaterWarn:        ratio >= 0.80,
+		WaterCrit:        ratio >= 0.92,
+		ByPlatform:       byPlat,
 	}
 }
 

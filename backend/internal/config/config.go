@@ -70,8 +70,6 @@ type PrefetchConfig struct {
 	TargetPython    []string `json:"target_python"`    // 目标 Python 版本列表，如 ["3.10","3.12"]
 	TargetPlatforms []string `json:"target_platforms"` // 多选：linux / linux-arm / win32 / win-arm / darwin / darwin-arm
 	TargetPlatform  string   `json:"target_platform"`  // 兼容旧单值；加载时并入 TargetPlatforms
-	MaxDepth        int      `json:"max_depth"`        // 已弃用：不再限制依赖深度，仅兼容旧配置持久化
-	MaxPackages     int      `json:"max_packages"`     // 依赖闭包包数上限（唯一刹车）
 }
 
 // TargetPythonVersions 返回配置的目标 Python 版本列表；空则返回默认 ["3.10","3.11","3.12"]。
@@ -334,8 +332,6 @@ func defaultRuntime() RuntimeSettings {
 				TargetPython:    []string{"3.10", "3.11", "3.12"},
 				TargetPlatforms: []string{defaultTargetPlatform()},
 				TargetPlatform:  defaultTargetPlatform(),
-				MaxDepth:        5,
-				MaxPackages:     200,
 			},
 			SmallFileBoost: SmallFileBoostConfig{Enabled: true, MaxSizeKB: 512},
 		},
@@ -442,13 +438,6 @@ func applyDefaults(cfg *Config) {
 		cfg.Scheduler.Prefetch.TargetPlatforms = []string{defaultTargetPlatform()}
 		cfg.Scheduler.Prefetch.TargetPlatform = defaultTargetPlatform()
 	}
-	// max_depth 已弃用（不参与预取逻辑）；负值夹成 0 避免脏数据
-	if cfg.Scheduler.Prefetch.MaxDepth < 0 {
-		cfg.Scheduler.Prefetch.MaxDepth = 0
-	}
-	if cfg.Scheduler.Prefetch.MaxPackages <= 0 {
-		cfg.Scheduler.Prefetch.MaxPackages = 200
-	}
 	if cfg.Scheduler.SmallFileBoost.MaxSizeKB <= 0 {
 		cfg.Scheduler.SmallFileBoost.MaxSizeKB = 512
 	}
@@ -485,197 +474,92 @@ func applyDefaults(cfg *Config) {
 		}
 		cfg.RateLimit.Windows = normed
 	}
-	if p, ok := cfg.Platforms["pypi"]; ok {
-		if p.Download.Concurrency <= 0 {
-			p.Download.Concurrency = 16
+
+	// 缺平台条目时补默认（初始化）；已有条目只做空字段归一化
+	for _, id := range []string{"pypi", "npm", "docker", "goproxy", "huggingface", "maven"} {
+		if _, ok := cfg.Platforms[id]; !ok {
+			cfg.Platforms[id] = defaultPlatformSeed(id)
 		}
-		if p.Download.ChunkSize <= 0 {
-			p.Download.ChunkSize = 5 * 1024 * 1024
-		}
-		if p.Download.MinSize <= 0 {
-			p.Download.MinSize = 100 * 1024
-		}
-		if p.Upstream == "" {
-			p.Upstream = "https://mirrors.aliyun.com/pypi"
-		}
-		if p.FileUpstream == "" {
-			p.FileUpstream = "https://mirrors.aliyun.com/pypi"
-		}
-		if p.MetadataUpstream == "" {
-			p.MetadataUpstream = "https://files.pythonhosted.org"
-		}
-		p.RateLimit = nil
-		cfg.Platforms["pypi"] = p
+		cfg.Platforms[id] = NormalizePlatform(id, cfg.Platforms[id])
 	}
-	// 旧库无 npm 条目时补齐（默认开启）
-	if _, ok := cfg.Platforms["npm"]; !ok {
-		cfg.Platforms["npm"] = PlatformConfig{
-			Enabled:      true,
-			Upstream:     "https://registry.npmmirror.com",
-			FileUpstream: "https://registry.npmmirror.com",
-			Download: DownloadConfig{
-				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
-			},
-		}
-	}
-	if p, ok := cfg.Platforms["npm"]; ok {
-		if p.Download.Concurrency <= 0 {
-			p.Download.Concurrency = 16
-		}
-		if p.Download.ChunkSize <= 0 {
-			p.Download.ChunkSize = 5 * 1024 * 1024
-		}
-		if p.Download.MinSize <= 0 {
-			p.Download.MinSize = 100 * 1024
-		}
-		if p.Upstream == "" {
-			p.Upstream = "https://registry.npmmirror.com"
-		}
-		if p.FileUpstream == "" {
-			p.FileUpstream = p.Upstream
-		}
-		// 旧默认官方源迁到国内镜像（仅当仍为官方默认时）
-		if p.Upstream == "https://registry.npmjs.org" {
-			p.Upstream = "https://registry.npmmirror.com"
-		}
-		if p.FileUpstream == "https://registry.npmjs.org" {
-			p.FileUpstream = "https://registry.npmmirror.com"
-		}
-		p.RateLimit = nil
-		cfg.Platforms["npm"] = p
-	}
-	// 旧库无 docker 条目时补齐（默认开启）
-	if _, ok := cfg.Platforms["docker"]; !ok {
-		cfg.Platforms["docker"] = PlatformConfig{
-			Enabled:          true,
-			Upstream:         "https://registry-1.docker.io",
-			FileUpstream:     "https://registry-1.docker.io",
-			MetadataUpstream: "https://auth.docker.io",
-			Download: DownloadConfig{
-				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
-			},
-		}
-	}
-	if p, ok := cfg.Platforms["docker"]; ok {
-		if p.Download.Concurrency <= 0 {
-			p.Download.Concurrency = 16
-		}
-		if p.Download.ChunkSize <= 0 {
-			p.Download.ChunkSize = 5 * 1024 * 1024
-		}
-		if p.Download.MinSize <= 0 {
-			p.Download.MinSize = 100 * 1024
-		}
-		if p.Upstream == "" {
-			p.Upstream = "https://registry-1.docker.io"
-		}
-		if p.FileUpstream == "" {
-			p.FileUpstream = p.Upstream
-		}
-		if p.MetadataUpstream == "" {
-			p.MetadataUpstream = "https://auth.docker.io"
-		}
-		p.RateLimit = nil
-		cfg.Platforms["docker"] = p
-	}
-	// 旧库无 goproxy 条目时补齐（默认开启）
-	if _, ok := cfg.Platforms["goproxy"]; !ok {
-		cfg.Platforms["goproxy"] = PlatformConfig{
-			Enabled:          true,
-			Upstream:         "https://goproxy.cn",
-			FileUpstream:     "https://goproxy.cn",
-			MetadataUpstream: "https://goproxy.cn",
-			Download: DownloadConfig{
-				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
-			},
-		}
-	}
-	if p, ok := cfg.Platforms["goproxy"]; ok {
-		if p.Download.Concurrency <= 0 {
-			p.Download.Concurrency = 16
-		}
-		if p.Download.ChunkSize <= 0 {
-			p.Download.ChunkSize = 5 * 1024 * 1024
-		}
-		if p.Download.MinSize <= 0 {
-			p.Download.MinSize = 100 * 1024
-		}
-		if p.Upstream == "" {
-			p.Upstream = "https://goproxy.cn"
-		}
-		if p.FileUpstream == "" {
-			p.FileUpstream = p.Upstream
-		}
-		if p.MetadataUpstream == "" {
-			p.MetadataUpstream = p.Upstream // sumdb 经 module 上游 /sumdb/...（如 goproxy.cn）
-		}
-		p.RateLimit = nil
-		cfg.Platforms["goproxy"] = p
-	}
-	// 旧库无 huggingface 条目时补齐（默认开启）
-	if _, ok := cfg.Platforms["huggingface"]; !ok {
-		cfg.Platforms["huggingface"] = PlatformConfig{
-			Enabled:      true,
-			Upstream:     "https://huggingface.co",
-			FileUpstream: "https://huggingface.co",
-			Download: DownloadConfig{
-				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
-			},
-		}
-	}
-	if p, ok := cfg.Platforms["huggingface"]; ok {
-		if p.Download.Concurrency <= 0 {
-			p.Download.Concurrency = 16
-		}
-		if p.Download.ChunkSize <= 0 {
-			p.Download.ChunkSize = 5 * 1024 * 1024
-		}
-		if p.Download.MinSize <= 0 {
-			p.Download.MinSize = 100 * 1024
-		}
-		// 空值或旧默认镜像 → 官网
-		if p.Upstream == "" || p.Upstream == "https://hf-mirror.com" {
-			p.Upstream = "https://huggingface.co"
-		}
-		if p.FileUpstream == "" || p.FileUpstream == "https://hf-mirror.com" {
-			p.FileUpstream = p.Upstream
-		}
-		p.RateLimit = nil
-		cfg.Platforms["huggingface"] = p
-	}
-	// 旧库无 maven 条目时补齐（默认开启）
-	if _, ok := cfg.Platforms["maven"]; !ok {
-		cfg.Platforms["maven"] = PlatformConfig{
-			Enabled:      true,
-			Upstream:     "https://maven.aliyun.com/repository/central",
-			FileUpstream: "https://maven.aliyun.com/repository/central",
-			Download: DownloadConfig{
-				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
-			},
-		}
-	}
-	if p, ok := cfg.Platforms["maven"]; ok {
-		if p.Download.Concurrency <= 0 {
-			p.Download.Concurrency = 16
-		}
-		if p.Download.ChunkSize <= 0 {
-			p.Download.ChunkSize = 5 * 1024 * 1024
-		}
-		if p.Download.MinSize <= 0 {
-			p.Download.MinSize = 100 * 1024
-		}
-		if p.Upstream == "" {
-			p.Upstream = "https://maven.aliyun.com/repository/central"
-		}
-		if p.FileUpstream == "" {
-			p.FileUpstream = p.Upstream
-		}
-		p.RateLimit = nil
-		cfg.Platforms["maven"] = p
-	}
+
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"
 	}
+}
+
+// defaultPlatformSeed 新建配置时的平台初始条目（含 Enabled）。
+func defaultPlatformSeed(id string) PlatformConfig {
+	dl := DownloadConfig{Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024}
+	switch id {
+	case "pypi":
+		return PlatformConfig{
+			Enabled: true, Upstream: "https://mirrors.aliyun.com/pypi", FileUpstream: "https://mirrors.aliyun.com/pypi",
+			MetadataUpstream: "https://files.pythonhosted.org", Download: dl,
+		}
+	case "npm":
+		return PlatformConfig{
+			Enabled: true, Upstream: "https://registry.npmmirror.com", FileUpstream: "https://registry.npmmirror.com", Download: dl,
+		}
+	case "docker":
+		return PlatformConfig{
+			Enabled: true, Upstream: "https://registry-1.docker.io", FileUpstream: "https://registry-1.docker.io",
+			MetadataUpstream: "https://auth.docker.io", Download: dl,
+		}
+	case "goproxy":
+		return PlatformConfig{
+			Enabled: true, Upstream: "https://goproxy.cn", FileUpstream: "https://goproxy.cn",
+			MetadataUpstream: "https://goproxy.cn", Download: dl,
+		}
+	case "huggingface":
+		return PlatformConfig{
+			Enabled: true, Upstream: "https://huggingface.co", FileUpstream: "https://huggingface.co", Download: dl,
+		}
+	case "maven":
+		return PlatformConfig{
+			Enabled: true, Upstream: "https://maven.aliyun.com/repository/central",
+			FileUpstream: "https://maven.aliyun.com/repository/central", Download: dl,
+		}
+	default:
+		return PlatformConfig{Download: dl}
+	}
+}
+
+// NormalizePlatform 空上游字段填该平台当前默认；FileUpstream 空则跟 Upstream。
+// 供 applyDefaults 与探测草稿共用；不含旧 URL 迁移。
+func NormalizePlatform(id string, p PlatformConfig) PlatformConfig {
+	seed := defaultPlatformSeed(id)
+	if p.Download.Concurrency <= 0 {
+		p.Download.Concurrency = seed.Download.Concurrency
+	}
+	if p.Download.ChunkSize <= 0 {
+		p.Download.ChunkSize = seed.Download.ChunkSize
+	}
+	if p.Download.MinSize <= 0 {
+		p.Download.MinSize = seed.Download.MinSize
+	}
+	if strings.TrimSpace(p.Upstream) == "" {
+		p.Upstream = seed.Upstream
+	}
+	if strings.TrimSpace(p.FileUpstream) == "" {
+		p.FileUpstream = p.Upstream
+	}
+	switch id {
+	case "pypi":
+		if strings.TrimSpace(p.MetadataUpstream) == "" {
+			p.MetadataUpstream = seed.MetadataUpstream
+		}
+	case "docker":
+		if strings.TrimSpace(p.MetadataUpstream) == "" {
+			p.MetadataUpstream = seed.MetadataUpstream
+		}
+	case "goproxy":
+		if strings.TrimSpace(p.MetadataUpstream) == "" {
+			p.MetadataUpstream = p.Upstream
+		}
+	}
+	p.RateLimit = nil
+	return p
 }
 
 func defaultTargetPlatform() string {

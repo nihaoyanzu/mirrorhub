@@ -12,6 +12,12 @@ export interface CacheStats {
   disk_free_ok: boolean
   water_warn: boolean
   water_crit: boolean
+  /** 各平台已用字节 */
+  by_platform?: Record<string, number>
+  /** 各平台命中次数 */
+  hits_by_platform?: Record<string, number>
+  /** 各平台未命中次数 */
+  misses_by_platform?: Record<string, number>
 }
 
 export interface AccessTestCheck {
@@ -46,12 +52,13 @@ export interface TrafficRecord {
   status: string
 }
 
-export interface TrafficStats {
+  export interface TrafficStats {
   upstream_bps: number
   downstream_bps: number
   upstream_total: number
   downstream_total: number
-  recent: TrafficRecord[]
+  /** 仅完整 Snapshot 含；/stats 轮询不返回 */
+  recent?: TrafficRecord[]
   recent_capacity?: number
 }
 
@@ -98,6 +105,19 @@ export interface QueueTask {
 
 export interface QueueResponse {
   tasks: QueueTask[]
+  total?: number
+  page?: number
+  page_size?: number
+  running_count?: number
+}
+
+export interface AccessListResponse {
+  items: TrafficRecord[]
+  total: number
+  page: number
+  page_size: number
+  platforms: string[]
+  capacity: number
 }
 
 export interface PackageSummary {
@@ -185,8 +205,6 @@ export interface AppConfig {
       target_python: string[]
       target_platforms?: string[]
       target_platform?: string
-      max_depth: number
-      max_packages: number
     }
     small_file_boost: {
       enabled: boolean

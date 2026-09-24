@@ -3,24 +3,66 @@ import { computed, ref } from 'vue'
 import { api } from '@/api/client'
 import type { QueueTask } from '@/types/api'
 
+export type QueueStatusFilter = 'all' | 'running' | 'done' | 'error' | 'cancelled'
+
 export const useQueueStore = defineStore('queue', () => {
   const tasks = ref<QueueTask[]>([])
   const loading = ref(false)
   const auto = ref(true)
+  const page = ref(1)
+  const pageSize = ref(15)
+  const total = ref(0)
+  const runningCount = ref(0)
+  const status = ref<QueueStatusFilter>('all')
+  const platform = ref('')
+  const priority = ref('')
   let timer: number | undefined
 
-  const runningCount = computed(() => tasks.value.filter((t) => t.status === 'running').length)
+  const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value) || 1))
 
   async function load(silent = false) {
     if (!silent) loading.value = true
     try {
-      const res = await api.getQueue()
+      const res = await api.getQueue({
+        page: page.value,
+        page_size: pageSize.value,
+        status: status.value === 'all' ? undefined : status.value,
+        platform: platform.value || undefined,
+        priority: priority.value || undefined,
+      })
       tasks.value = res.tasks || []
+      total.value = res.total ?? tasks.value.length
+      if (res.page && res.page > 0) page.value = res.page
+      if (res.page_size && res.page_size > 0) pageSize.value = res.page_size
+      runningCount.value = res.running_count ?? tasks.value.filter((t) => t.status === 'running').length
+      if (page.value > pageCount.value) {
+        page.value = pageCount.value
+      }
     } catch {
       // silent
     } finally {
       if (!silent) loading.value = false
     }
+  }
+
+  function setPage(p: number) {
+    const next = Math.min(Math.max(1, p), pageCount.value)
+    if (next === page.value) return
+    page.value = next
+    return load(true)
+  }
+
+  function setStatus(s: QueueStatusFilter) {
+    status.value = s
+    page.value = 1
+    return load()
+  }
+
+  function setQuery(opts: { platform?: string; priority?: string; pageSize?: number }) {
+    if (opts.platform !== undefined) platform.value = opts.platform
+    if (opts.priority !== undefined) priority.value = opts.priority
+    if (opts.pageSize !== undefined) pageSize.value = opts.pageSize
+    page.value = 1
   }
 
   async function cancel(id: string) {
@@ -62,8 +104,18 @@ export const useQueueStore = defineStore('queue', () => {
     tasks,
     loading,
     auto,
+    page,
+    pageSize,
+    total,
+    pageCount,
     runningCount,
+    status,
+    platform,
+    priority,
     load,
+    setPage,
+    setStatus,
+    setQuery,
     cancel,
     cancelMany,
     clearFinished,

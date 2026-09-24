@@ -98,6 +98,7 @@ func (s *Server) Routes() http.Handler {
 			r.Put("/config", s.putConfig)
 			r.Post("/config/test", s.postAccessTest)
 			r.Get("/stats", s.getStats)
+			r.Get("/access", s.getAccess)
 			r.Get("/queue", s.getQueue)
 			r.Delete("/queue", s.clearQueue)
 			r.Post("/prefetch", s.postPrefetch)
@@ -305,6 +306,14 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getStats(w http.ResponseWriter, _ *http.Request) {
 	cs := s.cache.Stats()
+	// 累计分平台为空时（升级前旧计数），用近期访问回填展示，避免仪表盘空白
+	if len(cs.HitsByPlatform) == 0 && len(cs.MissesByPlatform) == 0 && s.traffic != nil {
+		h, m := s.traffic.HitMissByPlatform()
+		if len(h) > 0 || len(m) > 0 {
+			cs.HitsByPlatform = h
+			cs.MissesByPlatform = m
+		}
+	}
 	metrics.CacheUsageRatio.Set(cs.UsageRatio)
 	metrics.DiskFreeBytes.Set(float64(cs.DiskFreeBytes))
 	metrics.SchedulerP0Active.Set(float64(s.sched.InteractiveActive()))
@@ -315,13 +324,103 @@ func (s *Server) getStats(w http.ResponseWriter, _ *http.Request) {
 		"resume_count":       s.sched.ResumeCount(),
 	}
 	if s.traffic != nil {
-		out["traffic"] = s.traffic.Snapshot()
+		out["traffic"] = s.traffic.SnapshotRates()
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) getQueue(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.sched.List()})
+func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
+	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
+	pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), 20)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
+	capacity := 200
+	var items any = []struct{}{}
+	total := 0
+	var platforms []string
+	if s.traffic != nil {
+		list, n := s.traffic.ListAccess(page, pageSize, platform)
+		total = n
+		platforms = s.traffic.AccessPlatforms()
+		items = list
+		_ = capacity
+	}
+	if platforms == nil {
+		platforms = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"platforms": platforms,
+		"capacity":  capacity,
+	})
+}
+
+func (s *Server) getQueue(w http.ResponseWriter, r *http.Request) {
+	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
+	pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), 15)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	if status == "all" {
+		status = ""
+	}
+	plat := strings.TrimSpace(r.URL.Query().Get("platform"))
+	prioRaw := strings.TrimSpace(r.URL.Query().Get("priority"))
+	prioSet := map[string]struct{}{}
+	if prioRaw != "" {
+		for _, p := range strings.Split(prioRaw, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				prioSet[p] = struct{}{}
+			}
+		}
+	}
+
+	all := s.sched.List()
+	running := 0
+	filtered := make([]any, 0, len(all))
+	for _, t := range all {
+		if t.Status == "running" {
+			running++
+		}
+		if status != "" && !strings.EqualFold(t.Status, status) {
+			continue
+		}
+		if plat != "" && !strings.EqualFold(strings.TrimSpace(t.Platform), plat) {
+			continue
+		}
+		if len(prioSet) > 0 {
+			if _, ok := prioSet[t.Priority]; !ok {
+				continue
+			}
+		}
+		filtered = append(filtered, t)
+	}
+	total := len(filtered)
+	start := (page - 1) * pageSize
+	var pageTasks []any
+	if start >= total {
+		pageTasks = []any{}
+	} else {
+		end := start + pageSize
+		if end > total {
+			end = total
+		}
+		pageTasks = filtered[start:end]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tasks":         pageTasks,
+		"total":         total,
+		"page":          page,
+		"page_size":     pageSize,
+		"running_count": running,
+	})
 }
 
 func (s *Server) clearQueue(w http.ResponseWriter, _ *http.Request) {
@@ -330,8 +429,9 @@ func (s *Server) clearQueue(w http.ResponseWriter, _ *http.Request) {
 }
 
 type prefetchReq struct {
-	URLs []string `json:"urls"`
-	Text string   `json:"text"` // 粘贴的 requirements / 依赖文件内容
+	URLs     []string `json:"urls"`
+	Text     string   `json:"text"`     // 粘贴的 requirements / 依赖文件内容
+	Platform string   `json:"platform"` // 可选：前端当前模块，强制该平台解析
 }
 
 func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
@@ -342,21 +442,63 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 	}
 	items := append([]string{}, body.URLs...)
 	var skipped []string
+	platHint := strings.ToLower(strings.TrimSpace(body.Platform))
+	if platHint == "hf" {
+		platHint = "huggingface"
+	}
+	if platHint == "go" {
+		platHint = "goproxy"
+	}
+
 	if strings.TrimSpace(body.Text) != "" {
-		for _, det := range platform.TextDetectors() {
+		if platHint != "" {
+			p := platform.ByName(platHint)
+			if p == nil {
+				http.Error(w, "未知平台: "+platHint, http.StatusBadRequest)
+				return
+			}
+			det, ok := p.(platform.TextDetector)
+			if !ok {
+				http.Error(w, "该平台不支持粘贴预取", http.StatusBadRequest)
+				return
+			}
 			if !det.LookLikePrefetchText(body.Text) {
-				continue
+				http.Error(w, "粘贴内容不符合当前模块格式", http.StatusBadRequest)
+				return
 			}
 			res, ok := det.ParsePrefetchText(body.Text)
 			if !ok {
-				continue
+				http.Error(w, "无法解析预取内容", http.StatusBadRequest)
+				return
 			}
 			items = append(items, res.Items...)
-			skipped = res.Skipped
-			break
+			skipped = append(skipped, res.Skipped...)
+		} else {
+			for _, det := range platform.TextDetectors() {
+				if !det.LookLikePrefetchText(body.Text) {
+					continue
+				}
+				res, ok := det.ParsePrefetchText(body.Text)
+				if !ok {
+					continue
+				}
+				items = append(items, res.Items...)
+				skipped = append(skipped, res.Skipped...)
+				break
+			}
 		}
 	}
-	// 去重保序
+
+	// 指定平台时，过滤非本平台 Owns 的条目
+	var owner platform.PrefetchExpander
+	if platHint != "" {
+		if p := platform.ByName(platHint); p != nil {
+			if e, ok := p.(platform.PrefetchExpander); ok {
+				owner = e
+			}
+		}
+	}
+
 	seen := map[string]struct{}{}
 	uniq := make([]string, 0, len(items))
 	for _, it := range items {
@@ -365,6 +507,10 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if _, ok := seen[it]; ok {
+			continue
+		}
+		if owner != nil && !owner.OwnsPrefetchItem(it) {
+			skipped = append(skipped, it)
 			continue
 		}
 		seen[it] = struct{}{}

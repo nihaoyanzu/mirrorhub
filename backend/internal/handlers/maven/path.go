@@ -35,15 +35,64 @@ func StripMaven2Prefix(p string) string {
 	return p
 }
 
+// StripRepoLayoutPrefix 剥常见仓库布局前缀（阿里云 /repository/central 等），得到 group/... 相对路径。
+func StripRepoLayoutPrefix(p string) string {
+	p = StripMaven2Prefix(p)
+	p = normalizePath(p)
+	// /repository/<name>/group/...
+	if strings.HasPrefix(p, "/repository/") {
+		rest := strings.TrimPrefix(p, "/repository/")
+		if i := strings.Index(rest, "/"); i > 0 {
+			return "/" + rest[i+1:]
+		}
+		return "/"
+	}
+	return p
+}
+
+// LayoutIdentity 从 Maven2 布局路径解析 groupId:artifactId 与可选 version。
+// metadata 路径无 version；制品路径含 version。
+func LayoutIdentity(reqPath string) (groupID, artifactID, version string, isMeta bool, ok bool) {
+	p := StripRepoLayoutPrefix(reqPath)
+	parts := pathParts(p)
+	if len(parts) < 3 {
+		return "", "", "", false, false
+	}
+	file := parts[len(parts)-1]
+	if isMavenMetadataFile(file) {
+		// group…/artifact/maven-metadata.xml
+		artifactID = parts[len(parts)-2]
+		groupParts := parts[:len(parts)-2]
+		if artifactID == "" || len(groupParts) == 0 {
+			return "", "", "", false, false
+		}
+		return strings.Join(groupParts, "."), artifactID, "", true, true
+	}
+	// group…/artifact/version/file
+	if len(parts) < 4 {
+		return "", "", "", false, false
+	}
+	version = parts[len(parts)-2]
+	artifactID = parts[len(parts)-3]
+	groupParts := parts[:len(parts)-3]
+	if artifactID == "" || version == "" || len(groupParts) == 0 {
+		return "", "", "", false, false
+	}
+	if isMavenMetadataFile(file) {
+		return "", "", "", false, false
+	}
+	return strings.Join(groupParts, "."), artifactID, version, false, true
+}
+
 // IsMavenPath 是否为可代理的 Maven2 路径（metadata 或制品）。
 func IsMavenPath(p string) bool {
-	p = StripMaven2Prefix(p)
+	p = StripRepoLayoutPrefix(p)
 	return IsMetadataPath(p) || IsPackagePath(p)
 }
 
 // IsMetadataPath 可变索引：maven-metadata.xml（及同名 checksum）。
 func IsMetadataPath(p string) bool {
-	p = StripMaven2Prefix(p)
+	p = StripRepoLayoutPrefix(p)
 	parts := pathParts(p)
 	if len(parts) < 3 {
 		return false
@@ -53,7 +102,7 @@ func IsMetadataPath(p string) bool {
 
 // IsPackagePath 不可变制品：pom/jar/aar/war/module/zip（及 checksum）。
 func IsPackagePath(p string) bool {
-	p = StripMaven2Prefix(p)
+	p = StripRepoLayoutPrefix(p)
 	parts := pathParts(p)
 	// group…/artifact/version/file → 至少 4 段
 	if len(parts) < 4 {
@@ -88,7 +137,7 @@ func IsMavenArtifactURL(raw string) bool {
 func TargetURL(upstream, reqPath string) string {
 	base := strings.TrimRight(strings.TrimSpace(upstream), "/")
 	if base == "" {
-		base = "https://maven.aliyun.com/repository/central"
+		return ""
 	}
 	rel := StripMaven2Prefix(reqPath)
 	if rel == "/" {

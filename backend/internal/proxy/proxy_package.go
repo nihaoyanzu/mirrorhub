@@ -32,7 +32,7 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 
 	if auther, ok := plat.(platform.UpstreamAuther); ok {
 		if err := auther.InjectUpstreamAuth(r.Context(), headers, cfg, r.URL.Path); err != nil {
-			if entry, ok := s.cache.Get(cacheKey); ok {
+			if entry, ok := s.cache.Get(cacheKey, m.Platform); ok {
 				return s.servePackageHit(w, r, entry, boost, onAcquired, onProgress)
 			}
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -40,7 +40,7 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 		}
 	}
 
-	if entry, ok := s.cache.Get(cacheKey); ok {
+	if entry, ok := s.cache.Get(cacheKey, m.Platform); ok {
 		return s.servePackageHit(w, r, entry, boost, onAcquired, onProgress)
 	}
 

@@ -23,9 +23,6 @@ type DockerPlatform struct {
 func (p *DockerPlatform) tokens(cfg config.Config) *dockerhandler.TokenSource {
 	pcfg := cfg.Platforms["docker"]
 	authBase := strings.TrimSpace(pcfg.MetadataUpstream)
-	if authBase == "" {
-		authBase = "https://auth.docker.io"
-	}
 	svc := dockerhandler.AuthServiceFromRegistry(pcfg.Upstream)
 	p.authMu.Lock()
 	defer p.authMu.Unlock()

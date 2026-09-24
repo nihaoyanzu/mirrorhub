@@ -50,17 +50,10 @@ func MatchGoproxy(path string, r Routes) *router.Match {
 	}
 
 	modUp := strings.TrimRight(strings.TrimSpace(r.Upstream), "/")
-	if modUp == "" {
-		modUp = "https://goproxy.cn"
-	}
 	fileUp := strings.TrimRight(strings.TrimSpace(r.FileUpstream), "/")
-	if fileUp == "" {
-		fileUp = modUp
-	}
 	sumUp := strings.TrimRight(strings.TrimSpace(r.SumUpstream), "/")
-	if sumUp == "" {
-		// 默认经 module 上游代取 sumdb（国内 goproxy.cn 等均支持 /sumdb/...）
-		sumUp = modUp
+	if modUp == "" || fileUp == "" {
+		return nil
 	}
 
 	if goproxyhandler.IsSumDBPath(path) {

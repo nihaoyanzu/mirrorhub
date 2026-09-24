@@ -40,7 +40,10 @@ async function submit() {
   <div class="relative flex min-h-screen items-center justify-center overflow-hidden px-4">
     <div class="pointer-events-none absolute inset-0">
       <div class="absolute -left-24 top-16 h-72 w-72 rounded-full bg-accent/10 blur-3xl" />
-      <div class="absolute -right-16 bottom-10 h-80 w-80 rounded-full bg-[#1e3a4c]/40 blur-3xl" />
+      <div
+        class="absolute -right-16 bottom-10 h-80 w-80 rounded-full blur-3xl"
+        style="background: var(--bg-glow-b)"
+      />
     </div>
 
     <div class="relative w-full max-w-sm">
@@ -54,7 +57,7 @@ async function submit() {
         <p class="mt-2 text-sm uppercase tracking-[0.18em] text-muted">{{ t('login.tagline') }}</p>
       </div>
 
-      <form class="ui-panel p-7" @submit.prevent="submit">
+      <form class="ui-panel p-7 sm:p-8" @submit.prevent="submit">
         <div class="space-y-4">
           <div>
             <label class="ui-label">{{ t('login.username') }}</label>

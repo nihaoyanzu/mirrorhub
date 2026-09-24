@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,8 +41,8 @@ type Snapshot struct {
 	UpstreamTotal   int64    `json:"upstream_total"`
 	DownstreamTotal int64    `json:"downstream_total"`
 	WindowSeconds   float64  `json:"window_seconds"`
-	Recent          []Access `json:"recent"`
-	RecentCapacity  int      `json:"recent_capacity"` // 环形缓冲上限（按条数，非时间）
+	Recent          []Access `json:"recent,omitempty"`
+	RecentCapacity  int      `json:"recent_capacity,omitempty"` // 环形缓冲上限（按条数，非时间）
 }
 
 type sample struct {
@@ -56,8 +57,8 @@ type persisted struct {
 	Recent        []Access `json:"recent"`
 }
 
-	// Recorder 统计上下行字节与近期访问（累计写入运营库）
-	type Recorder struct {
+// Recorder 统计上下行字节与近期访问（累计写入运营库）
+type Recorder struct {
 	down atomic.Uint64
 	up   atomic.Uint64
 
@@ -203,12 +204,28 @@ func (r *Recorder) Record(a Access) {
 }
 
 func (r *Recorder) Snapshot() Snapshot {
-	downTotal := int64(r.down.Load())
-	upTotal := int64(r.up.Load())
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	s := r.ratesLocked()
+	recent := make([]Access, len(r.recent))
+	for i := range r.recent {
+		recent[len(r.recent)-1-i] = r.recent[i]
+	}
+	s.Recent = recent
+	s.RecentCapacity = maxAccess
+	return s
+}
 
+// SnapshotRates 仅速率/累计（供 /stats 轮询，不含 recent）。
+func (r *Recorder) SnapshotRates() Snapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ratesLocked()
+}
+
+func (r *Recorder) ratesLocked() Snapshot {
+	downTotal := int64(r.down.Load())
+	upTotal := int64(r.up.Load())
 	nowDown := r.down.Load()
 	nowUp := r.up.Load()
 	now := time.Now()
@@ -231,20 +248,94 @@ func (r *Recorder) Snapshot() Snapshot {
 		}
 	}
 
-	recent := make([]Access, len(r.recent))
-	for i := range r.recent {
-		recent[len(r.recent)-1-i] = r.recent[i]
+	return Snapshot{
+		UpstreamBps:     downBps,
+		DownstreamBps:   upBps,
+		UpstreamTotal:   downTotal,
+		DownstreamTotal: upTotal,
+		WindowSeconds:   window,
 	}
+}
 
-		return Snapshot{
-			UpstreamBps:     downBps,
-			DownstreamBps:   upBps,
-			UpstreamTotal:   downTotal,
-			DownstreamTotal: upTotal,
-			WindowSeconds:   window,
-			Recent:          recent,
-			RecentCapacity:  maxAccess,
+// ListAccess 分页查询近期访问（新→旧）；platform 空则不过滤。
+func (r *Recorder) ListAccess(page, pageSize int, platform string) (items []Access, total int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	platform = strings.TrimSpace(platform)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// 倒序扫描
+	matched := make([]Access, 0, len(r.recent))
+	for i := len(r.recent) - 1; i >= 0; i-- {
+		a := r.recent[i]
+		if platform != "" && !strings.EqualFold(strings.TrimSpace(a.Platform), platform) {
+			continue
 		}
+		matched = append(matched, a)
+	}
+	total = len(matched)
+	start := (page - 1) * pageSize
+	if start >= total {
+		return []Access{}, total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return matched[start:end], total
+}
+
+// HitMissByPlatform 按平台汇总近期访问的命中/未命中（供仪表盘回填；与累计计数解耦）。
+func (r *Recorder) HitMissByPlatform() (hits, misses map[string]int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	hits = make(map[string]int64)
+	misses = make(map[string]int64)
+	for _, a := range r.recent {
+		p := strings.TrimSpace(a.Platform)
+		if p == "" {
+			p = "other"
+		}
+		switch strings.ToLower(strings.TrimSpace(a.Cache)) {
+		case "hit":
+			hits[p]++
+		case "miss":
+			misses[p]++
+		}
+	}
+	if len(hits) == 0 {
+		hits = nil
+	}
+	if len(misses) == 0 {
+		misses = nil
+	}
+	return hits, misses
+}
+
+// AccessPlatforms 近期访问中出现过的平台（去重排序）。
+func (r *Recorder) AccessPlatforms() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := map[string]struct{}{}
+	for _, a := range r.recent {
+		p := strings.TrimSpace(a.Platform)
+		if p == "" {
+			continue
+		}
+		seen[p] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ClientIP 解析真实客户端 IP

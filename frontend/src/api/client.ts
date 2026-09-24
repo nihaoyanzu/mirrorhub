@@ -1,7 +1,7 @@
 import type {
+  AccessListResponse,
   AccessTestResult,
   AppConfig,
-  CacheStats,
   LoginResponse,
   MeResponse,
   PackageDetail,
@@ -96,8 +96,30 @@ export const api = {
       body: JSON.stringify(body),
     }),
   getStats: () => request<SystemStats>('/api/v1/stats'),
-  getQueue: () => request<QueueResponse>('/api/v1/queue'),
-  getCache: () => request<CacheStats>('/api/v1/cache'),
+  getAccess: (params?: { page?: number; page_size?: number; platform?: string }) => {
+    const sp = new URLSearchParams()
+    if (params?.page) sp.set('page', String(params.page))
+    if (params?.page_size) sp.set('page_size', String(params.page_size))
+    if (params?.platform) sp.set('platform', params.platform)
+    const qs = sp.toString()
+    return request<AccessListResponse>(`/api/v1/access${qs ? `?${qs}` : ''}`)
+  },
+  getQueue: (params?: {
+    page?: number
+    page_size?: number
+    status?: string
+    platform?: string
+    priority?: string
+  }) => {
+    const sp = new URLSearchParams()
+    if (params?.page) sp.set('page', String(params.page))
+    if (params?.page_size) sp.set('page_size', String(params.page_size))
+    if (params?.status && params.status !== 'all') sp.set('status', params.status)
+    if (params?.platform) sp.set('platform', params.platform)
+    if (params?.priority) sp.set('priority', params.priority)
+    const qs = sp.toString()
+    return request<QueueResponse>(`/api/v1/queue${qs ? `?${qs}` : ''}`)
+  },
   clearCache: () => request<void>('/api/v1/cache', { method: 'DELETE' }),
   listPackages: (params?: {
     q?: string
@@ -122,10 +144,14 @@ export const api = {
   },
   deletePackageEntry: (key: string) =>
     request<void>(`/api/v1/packages/entry?key=${encodeURIComponent(key)}`, { method: 'DELETE' }),
-  prefetch: (urls: string[], text?: string) =>
+  prefetch: (urls: string[], text?: string, platform?: string) =>
     request<PrefetchResponse>('/api/v1/prefetch', {
       method: 'POST',
-      body: JSON.stringify({ urls, text: text || undefined }),
+      body: JSON.stringify({
+        urls,
+        text: text || undefined,
+        platform: platform || undefined,
+      }),
     }),
   cancelPrefetch: (id: string) =>
     request<void>(`/api/v1/prefetch?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),

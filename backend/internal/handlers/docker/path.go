@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/livehl/mirrorhub/internal/cache"
+	"github.com/livehl/mirrorhub/internal/cachekey"
 )
 
 var (
@@ -87,7 +87,7 @@ func DefaultManifestAccept() string {
 
 // ManifestCacheKey 索引缓存键（含 Accept 变体）。
 func ManifestCacheKey(manifestURL, acceptVariant string) string {
-	return "docker:index:" + cache.KeyFromURL(manifestURL) + ":" + acceptVariant
+	return "docker:index:" + cachekey.FromURL(manifestURL) + ":" + acceptVariant
 }
 
 // IsDockerBlobURL 是否为 registry blob 绝对 URL。

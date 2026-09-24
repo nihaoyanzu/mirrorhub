@@ -49,7 +49,7 @@ func parseLinkedSize(v string) int64 {
 // ServePackage 交互下载：命中缓存直接回文件；未命中则流式/并行流式并写入缓存。
 func (e *Engine) ServePackage(ctx context.Context, w http.ResponseWriter, opt Options) (cacheLabel string, err error) {
 	opt.resolveExpectedDigest()
-		if entry, ok := e.cache.Get(opt.CacheKey); ok {
+		if entry, ok := e.cache.Get(opt.CacheKey, opt.Platform); ok {
 			notifyAcquired(opt)
 			return serveCached(w, entry, opt.Boost, opt.RangeHeader, "HIT")
 		}
@@ -81,7 +81,7 @@ func (e *Engine) ServePackage(ctx context.Context, w http.ResponseWriter, opt Op
 				return "na", true, ctx.Err()
 			case <-sw.done:
 			}
-			if entry, ok := e.cache.Get(opt.CacheKey); ok {
+			if entry, ok := e.cache.Get(opt.CacheKey, opt.Platform); ok {
 				l, e2 := serveCached(w, entry, opt.Boost, opt.RangeHeader, "HIT")
 				return l, true, e2
 			}
@@ -444,15 +444,28 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 	}
 	cleanupTmp = false // 交由 Put 接管路径
 	opt.resolveExpectedDigest()
+	digest := opt.ExpectedSHA256
 	if err := verifyAndRemember(tmp, opt); err != nil {
-		_ = os.Remove(tmp)
-		return nil, ct, written, err
+		// 已向客户端写出正文：降级为无摘要入库，避免「客户端已拿到文件但本地无缓存」
+		// （否则断网上游时二次请求无法 HIT）
+		if headerWritten {
+			if e.log != nil {
+				e.log.Warn("stream digest verify failed after client write; caching without digest",
+					zap.String("url", opt.metaSource()),
+					zap.Error(err),
+				)
+			}
+			digest = ""
+		} else {
+			_ = os.Remove(tmp)
+			return nil, ct, written, err
+		}
 	}
 
 	entry, err := e.cache.Put(opt.CacheKey, tmp, ct, opt.TTLSeconds, cache.Meta{
 		SourceURL: opt.metaSource(),
 		Kind:      opt.metaKind(),
-		Digest:    opt.ExpectedSHA256,
+		Digest:    digest,
 	})
 	if err != nil {
 		_ = os.Remove(tmp)

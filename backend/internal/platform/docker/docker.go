@@ -44,12 +44,9 @@ func MatchDocker(path string, r Routes) *router.Match {
 		return nil
 	}
 	reg := strings.TrimRight(strings.TrimSpace(r.Upstream), "/")
-	if reg == "" {
-		reg = "https://registry-1.docker.io"
-	}
 	fileUp := strings.TrimRight(strings.TrimSpace(r.FileUpstream), "/")
-	if fileUp == "" {
-		fileUp = reg
+	if reg == "" || fileUp == "" {
+		return nil
 	}
 
 	if dockerhandler.IsBlobPath(path) {

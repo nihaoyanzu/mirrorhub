@@ -69,7 +69,7 @@ func IsIndexPath(path string) bool {
 func SumDBUpstreamURL(sumBase, path string) string {
 	base := strings.TrimRight(strings.TrimSpace(sumBase), "/")
 	if base == "" {
-		base = "https://sum.golang.org"
+		return ""
 	}
 	path = normalizePath(path)
 	rest := path
@@ -113,7 +113,7 @@ func PrefetchLookupURL(sumBase, modulePath, version string) (string, error) {
 	}
 	base := strings.TrimRight(strings.TrimSpace(sumBase), "/")
 	if base == "" {
-		base = "https://goproxy.cn"
+		return "", errInvalid("empty sumdb upstream")
 	}
 	rel := "/sumdb/sum.golang.org/lookup/" + escMod + "@" + escVer
 	if strings.Contains(strings.ToLower(base), "sum.golang.org") {

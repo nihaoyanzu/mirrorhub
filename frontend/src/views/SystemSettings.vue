@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import ModalDialog from '@/components/ModalDialog.vue'
+import PageHeader from '@/components/PageHeader.vue'
 import { api } from '@/api/client'
 import { useSessionStore } from '@/stores/session'
 import { useToastStore } from '@/stores/toast'
@@ -151,8 +152,6 @@ function schedulerPayload(existing: AppConfig['scheduler'] | undefined) {
         ? [...prev.target_platforms]
         : [prev?.target_platform || 'linux'],
       target_platform: prev?.target_platform || prev?.target_platforms?.[0] || 'linux',
-      max_depth: prev?.max_depth ?? 5,
-      max_packages: prev?.max_packages ?? 200,
     },
     small_file_boost: {
       enabled: form.small_file_boost_enabled,
@@ -331,20 +330,8 @@ onMounted(() => {
 
 <template>
   <div>
-    <div class="mb-4 flex flex-wrap items-center gap-3">
-      <div class="flex min-w-0 flex-1 flex-wrap gap-1 rounded-xl border border-line bg-panel/60 p-1">
-        <button
-          v-for="item in tabs"
-          :key="item.id"
-          type="button"
-          class="ui-tab"
-          :class="{ 'ui-tab-active': tab === item.id }"
-          @click="setTab(item.id)"
-        >
-          {{ item.label }}
-        </button>
-      </div>
-      <div class="flex shrink-0 flex-wrap items-center gap-2">
+    <PageHeader :title="t('system.title')">
+      <template #actions>
         <template v-if="configTabs">
           <span v-if="dirty" class="ui-badge-warn">{{ t('common.unsaved') }}</span>
           <button class="ui-btn" :disabled="loading || saving" @click="load">{{ t('system.reload') }}</button>
@@ -363,7 +350,20 @@ onMounted(() => {
             {{ pwdSaving ? t('system.pwdSaving') : t('system.changePassword') }}
           </button>
         </template>
-      </div>
+      </template>
+    </PageHeader>
+
+    <div class="mb-5 flex flex-wrap gap-1 rounded-xl border border-line bg-panel/70 p-1">
+      <button
+        v-for="item in tabs"
+        :key="item.id"
+        type="button"
+        class="ui-tab"
+        :class="{ 'ui-tab-active': tab === item.id }"
+        @click="setTab(item.id)"
+      >
+        {{ item.label }}
+      </button>
     </div>
 
     <section

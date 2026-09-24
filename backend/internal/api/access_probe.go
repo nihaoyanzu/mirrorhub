@@ -78,12 +78,12 @@ func (s *Server) postAccessTest(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
-		pcfg := config.PlatformConfig{
+		pcfg := config.NormalizePlatform(p.Name(), config.PlatformConfig{
 			Enabled:          true,
 			Upstream:         d.Upstream,
 			FileUpstream:     d.FileUpstream,
 			MetadataUpstream: d.MetadataUpstream,
-		}
+		})
 		checks := prober.ProbeAccess(platform.AccessProbeEnv{
 			Ctx:    ctx,
 			Client: client,

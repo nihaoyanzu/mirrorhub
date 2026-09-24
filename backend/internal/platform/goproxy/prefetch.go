@@ -39,11 +39,11 @@ func (p *GoproxyPlatform) ExpandPrefetchItem(env platform.PrefetchExpandEnv, ite
 	}
 	modUp := strings.TrimRight(strings.TrimSpace(pcfg.Upstream), "/")
 	if modUp == "" {
-		modUp = "https://goproxy.cn"
+		return nil, fmt.Errorf("goproxy 未配置上游")
 	}
 	sumUp := strings.TrimRight(strings.TrimSpace(pcfg.MetadataUpstream), "/")
 	if sumUp == "" {
-		sumUp = modUp
+		return nil, fmt.Errorf("goproxy 未配置 SumDB 上游")
 	}
 	infoURL, modURL, zipURL, lookupURL, err := goproxyhandler.ModuleProxyURLs(modUp, sumUp, ref.Path, ref.Version)
 	if err != nil {

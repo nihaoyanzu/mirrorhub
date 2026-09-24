@@ -13,12 +13,17 @@ import (
 	"github.com/livehl/mirrorhub/internal/platform"
 )
 
-// HF 优先于 Docker，避免 owner/repo 被误判为镜像。
+// HF 优先于 Docker：无 tag 的 owner/repo 只归 HF（Docker 不认裸名）。
+// 与 Go module / digest 的形态冲突由 ParseRepoRef 正规则消化，不依赖其它平台。
 const prefetchPriorityHF = 100
 
 func (p *HuggingFacePlatform) PrefetchPriority() int { return prefetchPriorityHF }
 
 func (p *HuggingFacePlatform) OwnsPrefetchItem(item string) bool {
+	item = strings.TrimSpace(item)
+	if item == "" {
+		return false
+	}
 	if hfhandler.IsHuggingFaceArtifactURL(item) {
 		return true
 	}
@@ -56,11 +61,11 @@ func (p *HuggingFacePlatform) ExpandPrefetchItem(env platform.PrefetchExpandEnv,
 	}
 	up := strings.TrimRight(strings.TrimSpace(pcfg.Upstream), "/")
 	if up == "" {
-		up = "https://huggingface.co"
+		return nil, fmt.Errorf("huggingface 未配置上游")
 	}
 	fileUp := strings.TrimRight(strings.TrimSpace(pcfg.FileUpstream), "/")
 	if fileUp == "" {
-		fileUp = up
+		return nil, fmt.Errorf("huggingface 未配置文件上游")
 	}
 	treeURL := hfhandler.TreeAPIURL(up, ref.RepoType, ref.ID, ref.Revision)
 	headers := http.Header{}

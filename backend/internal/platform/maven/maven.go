@@ -46,12 +46,9 @@ func MatchMaven(path string, r Routes) *router.Match {
 	}
 
 	up := strings.TrimRight(strings.TrimSpace(r.Upstream), "/")
-	if up == "" {
-		up = "https://maven.aliyun.com/repository/central"
-	}
 	fileUp := strings.TrimRight(strings.TrimSpace(r.FileUpstream), "/")
-	if fileUp == "" {
-		fileUp = up
+	if up == "" || fileUp == "" {
+		return nil
 	}
 
 	rel := mavenhandler.StripMaven2Prefix(path)

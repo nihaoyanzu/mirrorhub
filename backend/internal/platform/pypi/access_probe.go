@@ -12,12 +12,15 @@ import (
 )
 
 func (p *PyPIPlatform) ProbeAccess(env platform.AccessProbeEnv) []platform.AccessProbeCheck {
-	upstream := env.Cfg.Upstream
-	fileUpstream := env.Cfg.FileUpstream
-	if strings.TrimSpace(fileUpstream) == "" {
-		fileUpstream = upstream
-	}
+	upstream := strings.TrimRight(strings.TrimSpace(env.Cfg.Upstream), "/")
+	fileUpstream := strings.TrimRight(strings.TrimSpace(env.Cfg.FileUpstream), "/")
 	metaUpstream := env.Cfg.MetadataUpstream
+	if upstream == "" {
+		return []platform.AccessProbeCheck{{
+			Name: "index_upstream", OK: false, MS: 0,
+			Detail: "未配置上游",
+		}}
+	}
 
 	var checks []platform.AccessProbeCheck
 	var indexBody []byte
@@ -71,26 +74,26 @@ func (p *PyPIPlatform) ProbeAccess(env platform.AccessProbeEnv) []platform.Acces
 		if metaBase == "" {
 			checks = append(checks, platform.AccessProbeCheck{
 				Name: "metadata_upstream", OK: true, Skipped: true, MS: 0,
-				Detail: "未配置，运行时回退到包文件上游",
+				Detail: "未配置 metadata 上游",
 			})
+		} else {
+			t0 := time.Now()
+			metaURL := pickMetadataProbeURL(indexBody, indexURL, metaBase)
+			if metaURL == "" {
+				checks = append(checks, platform.AccessProbeCheck{
+					Name: "metadata_upstream", OK: false, MS: 0,
+					Detail: "无法从索引构造 .metadata 探测 URL",
+				})
 			} else {
-				t0 := time.Now()
-				metaURL := pickMetadataProbeURL(indexBody, indexURL, metaBase)
-				if metaURL == "" {
-					checks = append(checks, platform.AccessProbeCheck{
-						Name: "metadata_upstream", OK: false, MS: 0,
-						Detail: "无法从索引构造 .metadata 探测 URL",
-					})
-				} else {
-					c := platform.ProbeDownloadSample(env.Ctx, env.Client, "metadata_upstream", metaURL, nil)
-					if !c.OK && strings.Contains(c.Detail, "HTTP 404") {
-						c.OK = true
-						c.Detail = fmt.Sprintf("%s（该源可能不提供 PEP 658，预取依赖闭包会受限）", c.Detail)
-						c.MS = time.Since(t0).Milliseconds()
-					}
-					checks = append(checks, c)
+				c := platform.ProbeDownloadSample(env.Ctx, env.Client, "metadata_upstream", metaURL, nil)
+				if !c.OK && strings.Contains(c.Detail, "HTTP 404") {
+					c.OK = true
+					c.Detail = fmt.Sprintf("%s（该源可能不提供 PEP 658，预取依赖闭包会受限）", c.Detail)
+					c.MS = time.Since(t0).Milliseconds()
 				}
+				checks = append(checks, c)
 			}
+		}
 	}
 
 	return checks

@@ -142,16 +142,25 @@ func platformForURL(cfg config.Config, rawURL string) (platform.Platform, config
 }
 
 func (s *Service) expandItem(ctx context.Context, item string) ([]string, error) {
+	cfg := s.cfg.Get()
 	env := platform.PrefetchExpandEnv{
 		Ctx:     ctx,
-		Cfg:     s.cfg.Get(),
+		Cfg:     cfg,
 		Backend: s,
 		Log:     s.log,
 	}
 	for _, exp := range platform.PrefetchExpanders() {
-		if exp.OwnsPrefetchItem(item) {
-			return exp.ExpandPrefetchItem(env, item)
+		if !exp.OwnsPrefetchItem(item) {
+			continue
 		}
+		// 最高优先级认领者已禁用：直接失败，禁止落到更低优先级平台继续展开
+		if p, ok := exp.(platform.Platform); ok {
+			name := p.Name()
+			if pcfg, ok := cfg.Platforms[name]; ok && !pcfg.Enabled {
+				return nil, fmt.Errorf("%s 模块未启用", name)
+			}
+		}
+		return exp.ExpandPrefetchItem(env, item)
 	}
 	// 未被任何平台认领的绝对 URL：原样入队
 	if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
@@ -204,6 +213,14 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 		if plat != nil {
 			platName = plat.Name()
 		}
+		taskID := s.sched.Begin(platName, rawURL, scheduler.PriorityPrefetch, false, false)
+		if plat != nil && !pcfg.Enabled {
+			s.sched.MarkRunning(taskID)
+			err := fmt.Errorf("%s 模块未启用", platName)
+			s.sched.End(taskID, err)
+			s.log.Warn("prefetch skipped disabled platform", zap.String("url", rawURL), zap.Error(err))
+			return
+		}
 		cacheKey := cache.KeyFromURL(rawURL)
 		headers := http.Header{}
 		expectedSHA := downloader.LookupDigest(rawURL)
@@ -211,7 +228,6 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 		if u, err := url.Parse(rawURL); err == nil {
 			reqPath = u.Path
 		}
-		taskID := s.sched.Begin(platName, rawURL, scheduler.PriorityPrefetch, false, false)
 		if plat != nil {
 			if keyer, ok := plat.(platform.PackageKeyer); ok {
 				key, sha := keyer.PackageCacheIdentity(reqPath, rawURL, headers, cacheKey)

@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import PageHeader from '@/components/PageHeader.vue'
 import TaskTable from '@/components/TaskTable.vue'
-import { useQueueStore } from '@/stores/queue'
+import { useQueueStore, type QueueStatusFilter } from '@/stores/queue'
 import { useToastStore } from '@/stores/toast'
-import type { QueueTask } from '@/types/api'
 
 const { t } = useI18n()
 const toast = useToastStore()
 const queueStore = useQueueStore()
 
-const filter = defineModel<'all' | 'running' | 'done' | 'error' | 'cancelled'>('filter', { default: 'all' })
+const filter = defineModel<'all' | 'running' | 'done' | 'error' | 'cancelled'>('filter', {
+  default: 'all',
+})
 
 const filters = computed(() => [
   { id: 'all' as const, label: t('queue.all') },
@@ -21,12 +22,19 @@ const filters = computed(() => [
   { id: 'cancelled' as const, label: t('queue.cancelled') },
 ])
 
-const filtered = computed(() => {
-  if (filter.value === 'all') return queueStore.tasks
-  return queueStore.tasks.filter((t: QueueTask) => t.status === filter.value)
-})
+watch(
+  filter,
+  (v) => {
+    queueStore.setQuery({ platform: '', priority: '' })
+    queueStore.setStatus(v as QueueStatusFilter)
+  },
+  { immediate: true },
+)
 
-onMounted(() => queueStore.startPolling(3000))
+onMounted(() => {
+  queueStore.setQuery({ platform: '', priority: '', pageSize: 15 })
+  queueStore.startPolling(3000)
+})
 onUnmounted(() => queueStore.stopPolling())
 
 async function cancel(id: string) {
@@ -59,7 +67,7 @@ async function clearFinished() {
 
 <template>
   <div>
-    <PageHeader :title="t('queue.title')" :description="t('queue.subtitle')">
+    <PageHeader :title="t('queue.title')">
       <template #actions>
         <span class="ui-badge-muted">{{ t('queue.running') }} {{ queueStore.runningCount }}</span>
         <button type="button" class="ui-btn" @click="clearFinished">{{ t('queue.clearFinished') }}</button>
@@ -80,12 +88,16 @@ async function clearFinished() {
     <section class="ui-panel overflow-hidden">
       <TaskTable
         :key="filter"
-        :tasks="filtered"
+        :tasks="queueStore.tasks"
         :loading="queueStore.loading"
         :show-priority="true"
         :empty-title="t('queue.queueIdle')"
+        :server-page="queueStore.page"
+        :server-total="queueStore.total"
+        :server-page-size="queueStore.pageSize"
         @cancel="cancel"
         @cancel-many="cancelMany"
+        @update:page="queueStore.setPage"
       />
     </section>
   </div>

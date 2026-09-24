@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter, RouterLink } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
@@ -56,16 +56,8 @@ const showVersions = computed(() => {
   return (detail.value?.versions || []).length > 0 || canPrefetchVersion.value
 })
 
-const prefetchTo = computed(() =>
-  currentDesc.value.nav.prefetch ? `/prefetch?module=${moduleId.value}` : '',
-)
-const pageTitle = computed(() => {
-  const mod = t(currentDesc.value.labelKey)
-  const page = isLocalMode.value ? t(currentDesc.value.nav.catalogLabelKey) : t('packages.title')
-  return `${mod} · ${page}`
-})
-const pageSubtitle = computed(() =>
-  isLocalMode.value ? t('packages.localSubtitle') : t('packages.subtitle'),
+const pageTitle = computed(() =>
+  isLocalMode.value ? t(currentDesc.value.nav.catalogLabelKey) : t('packages.title'),
 )
 const searchPlaceholder = computed(() =>
   isLocalMode.value ? t('packages.localPlaceholder') : t('packages.placeholder'),
@@ -273,7 +265,7 @@ async function requestPrefetch(version: string) {
   if (!selected.value || !version || !canPrefetchVersion.value) return
   const spec = prefetchSpec(selected.value, version)
   try {
-    await api.prefetch([spec])
+    await api.prefetch([spec], undefined, moduleId.value)
     toast.ok(t('packages.submittedPrefetch', { name: spec }))
   } catch (e: any) {
     toast.err(e.message || t('prefetch.submitFailed'))
@@ -312,11 +304,9 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <PageHeader :title="pageTitle" :description="pageSubtitle">
-      <template #actions>
-        <span class="ui-badge-muted">{{ t(currentDesc.labelKey) }}</span>
-        <span v-if="filteredHint" class="ui-badge-muted">{{ filteredHint }}</span>
-        <RouterLink v-if="prefetchTo" class="ui-btn" :to="prefetchTo">{{ t('nav.prefetch') }}</RouterLink>
+    <PageHeader :title="pageTitle">
+      <template v-if="filteredHint" #actions>
+        <span class="ui-badge-muted">{{ filteredHint }}</span>
       </template>
     </PageHeader>
 

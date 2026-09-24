@@ -2,11 +2,13 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
+import PageHeader from '@/components/PageHeader.vue'
 import StatTile from '@/components/StatTile.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import DonutChart from '@/components/DonutChart.vue'
 import { useStatsStore } from '@/stores/stats'
 import { fmtBytes, fmtRate, hitRate } from '@/lib/format'
+import { MODULE_BY_ID, MODULES, moduleColor } from '@/modules/registry'
 
 const { t } = useI18n()
 const statsStore = useStatsStore()
@@ -27,14 +29,30 @@ const capacityCenter = computed(() => {
   return `${Math.min(100, (used / max) * 100).toFixed(0)}%`
 })
 
-const cacheSlices = computed(() => {
+const quotaLeft = computed(() => {
   const used = Number(stats.value?.cache?.total_size ?? 0)
   const max = Number(stats.value?.cache?.max_size ?? 0)
-  const free = max > used ? max - used : 0
-  return [
-    { label: t('dashboard.used'), value: used, color: 'var(--color-accent)' },
-    { label: t('dashboard.freeCapacity'), value: free, color: 'var(--color-line)' },
-  ]
+  if (!max) return null
+  return Math.max(0, max - used)
+})
+
+const cacheSlices = computed(() => {
+  const by = stats.value?.cache?.by_platform || {}
+  const slices = MODULES.map((d) => ({
+    label: t(d.labelKey),
+    value: Number(by[d.id] || 0),
+    color: moduleColor(d.id),
+  })).filter((s) => s.value > 0)
+
+  const other = Number(by.other || 0)
+  if (other > 0) {
+    slices.push({
+      label: t('dashboard.otherPlatform'),
+      value: other,
+      color: 'var(--color-module-other)',
+    })
+  }
+  return slices
 })
 
 const hitSlices = computed(() => [
@@ -42,11 +60,48 @@ const hitSlices = computed(() => [
   { label: t('dashboard.miss'), value: Number(stats.value?.cache?.misses ?? 0), color: 'var(--color-warn)' },
 ])
 
+/** 各模块命中率；无请求记为 0%（与模块占用图下方摘要同风格） */
+const hitByModule = computed(() => {
+  const hits = stats.value?.cache?.hits_by_platform || {}
+  const misses = stats.value?.cache?.misses_by_platform || {}
+  const rows = MODULES.map((d) => {
+    const h = Number(hits[d.id] || 0)
+    const m = Number(misses[d.id] || 0)
+    const total = h + m
+    return {
+      id: d.id,
+      label: t(d.labelKey),
+      color: moduleColor(d.id),
+      rate: total > 0 ? `${((h / total) * 100).toFixed(1)}%` : '0%',
+    }
+  })
+
+  const oh = Number(hits.other || 0)
+  const om = Number(misses.other || 0)
+  const ot = oh + om
+  if (ot > 0) {
+    rows.push({
+      id: 'other',
+      label: t('dashboard.otherPlatform'),
+      color: 'var(--color-module-other)',
+      rate: `${((oh / ot) * 100).toFixed(1)}%`,
+    })
+  }
+  return rows
+})
+
 const limiters = computed(() => stats.value?.rate_limiters ?? [])
+
+function platformLabel(id: string) {
+  const d = MODULE_BY_ID[id]
+  return d ? t(d.labelKey) : id
+}
 </script>
 
 <template>
   <div>
+    <PageHeader :title="t('dashboard.title')" />
+
     <div class="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
       <StatTile :label="t('dashboard.pull')" :value="upstreamBps" icon="pull" />
       <StatTile :label="t('dashboard.share')" :value="downstreamBps" icon="share" />
@@ -55,52 +110,70 @@ const limiters = computed(() => stats.value?.rate_limiters ?? [])
     </div>
 
     <div v-if="stats" class="mb-6 grid gap-4 lg:grid-cols-2">
-      <section class="ui-panel p-4">
-        <div class="mb-3 flex items-center justify-between">
-          <h2 class="text-sm font-medium text-fg">{{ t('dashboard.capacity') }}</h2>
+      <section class="ui-panel p-4 sm:p-5">
+        <div class="mb-3 flex items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold text-fg">{{ t('dashboard.capacityByModule') }}</h2>
           <span
             v-if="stats.cache?.water_crit || stats.cache?.water_warn"
-            class="h-2 w-2 rounded-full"
+            class="h-2 w-2 shrink-0 rounded-full"
             :class="stats.cache?.water_crit ? 'bg-danger' : 'bg-warn'"
             :title="stats.cache?.water_crit ? t('cache.critical') : t('cache.warning')"
           />
         </div>
         <DonutChart
+          v-if="cacheSlices.length"
           :slices="cacheSlices"
           value-format="bytes"
-          :center-label="t('dashboard.usage')"
+          :center-label="t('dashboard.quotaUsage')"
           :center-value="capacityCenter"
         />
-        <div class="mt-4 grid grid-cols-3 gap-2 border-t border-line pt-3 text-center">
+        <EmptyState v-else :title="t('dashboard.noModuleCache')" />
+        <div class="mt-3 grid grid-cols-2 gap-2 border-t border-line pt-3 text-center sm:grid-cols-4">
           <div>
-            <div class="text-xs uppercase tracking-wide text-muted">{{ t('dashboard.entries') }}</div>
-            <div class="mt-1 font-mono text-base text-fg">{{ stats.cache?.entries ?? 0 }}</div>
+            <div class="text-[0.65rem] uppercase tracking-wide text-muted">{{ t('dashboard.entries') }}</div>
+            <div class="mt-0.5 font-mono text-sm tabular-nums text-fg">{{ stats.cache?.entries ?? 0 }}</div>
           </div>
           <div>
-            <div class="text-xs uppercase tracking-wide text-muted">{{ t('dashboard.usage') }}</div>
-            <div class="mt-1 font-mono text-base text-fg">{{ fmtBytes(stats.cache?.total_size ?? 0) }}</div>
+            <div class="text-[0.65rem] uppercase tracking-wide text-muted">{{ t('dashboard.usage') }}</div>
+            <div class="mt-0.5 font-mono text-sm tabular-nums text-fg">{{ fmtBytes(stats.cache?.total_size ?? 0) }}</div>
           </div>
           <div>
-            <div class="text-xs uppercase tracking-wide text-muted">{{ t('dashboard.disk') }}</div>
-            <div class="mt-1 font-mono text-base text-fg">
+            <div class="text-[0.65rem] uppercase tracking-wide text-muted">{{ t('dashboard.quotaLeft') }}</div>
+            <div class="mt-0.5 font-mono text-sm tabular-nums text-fg">
+              {{ quotaLeft == null ? t('dashboard.unknown') : fmtBytes(quotaLeft) }}
+            </div>
+          </div>
+          <div>
+            <div class="text-[0.65rem] uppercase tracking-wide text-muted">{{ t('dashboard.disk') }}</div>
+            <div class="mt-0.5 font-mono text-sm tabular-nums text-fg">
               {{ stats.cache?.disk_free_ok ? fmtBytes(stats.cache?.disk_free_bytes ?? 0) : t('dashboard.unknown') }}
             </div>
           </div>
         </div>
       </section>
-      <section class="ui-panel p-4">
-        <h2 class="mb-3 text-sm font-medium text-fg">{{ t('dashboard.cacheHit') }}</h2>
+      <section class="ui-panel p-4 sm:p-5">
+        <h2 class="mb-3 text-sm font-semibold text-fg">{{ t('dashboard.cacheHit') }}</h2>
         <DonutChart
           :slices="hitSlices"
           :center-label="t('dashboard.hitRate')"
           :center-value="hitRateStr"
         />
+        <div class="mt-3 flex gap-1 border-t border-line pt-3 text-center">
+          <div v-for="row in hitByModule" :key="row.id" class="min-w-0 flex-1">
+            <div class="truncate text-xs text-muted" :title="row.label">
+              {{ row.label }}
+            </div>
+            <div class="mt-0.5 font-mono text-sm tabular-nums" :style="{ color: row.color }">
+              {{ row.rate }}
+            </div>
+          </div>
+        </div>
       </section>
     </div>
 
     <section class="ui-panel overflow-x-auto">
       <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2.5">
-        <h2 class="text-sm font-medium text-fg">{{ t('dashboard.rateLimit') }}</h2>
+        <h2 class="text-sm font-semibold text-fg">{{ t('dashboard.rateLimit') }}</h2>
         <RouterLink class="ui-btn-ghost !py-1 text-xs" to="/settings?tab=rate">
           {{ t('dashboard.openSettings') }}
         </RouterLink>
@@ -122,7 +195,15 @@ const limiters = computed(() => stats.value?.rate_limiters ?? [])
           </thead>
           <tbody>
             <tr v-for="(r, i) in limiters" :key="i">
-              <td class="font-medium">{{ r.platform }}</td>
+              <td class="font-medium">
+                <span class="inline-flex items-center gap-2">
+                  <span
+                    class="ui-module-dot"
+                    :style="{ '--module-color': moduleColor(r.platform) }"
+                  />
+                  {{ platformLabel(r.platform) }}
+                </span>
+              </td>
               <td>
                 <span class="text-xs" :class="r.bandwidth_limited ? 'text-warn' : 'text-ok'">
                   {{ r.bandwidth_limited ? t('dashboard.rateLimited') : t('dashboard.fullSpeed') }}

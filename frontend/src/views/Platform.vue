@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import ModalDialog from '@/components/ModalDialog.vue'
+import ModuleIcon from '@/components/ModuleIcon.vue'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 import { useModulesStore } from '@/stores/modules'
 import type { AccessTestModule, AppConfig, PlatformConfig } from '@/types/api'
-import { isKnownModule, MODULE_BY_ID, MODULES } from '@/modules/registry'
+import { isKnownModule, MODULE_BY_ID, MODULES, moduleColor } from '@/modules/registry'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -43,8 +44,6 @@ const prefetchForm = reactive({
   extra_wheel_tags: '',
   target_python: '3.10\n3.11\n3.12',
   target_platforms: ['linux'] as string[],
-  max_packages: 200,
-  max_depth: 5,
 })
 
 type PlatformDraft = {
@@ -68,7 +67,7 @@ const platformOptions = [
 ] as const
 
 const currentDesc = computed(() => MODULE_BY_ID[moduleId.value] || MODULES[0])
-const moduleOptions = MODULES.map((d) => ({ id: d.id, labelKey: d.labelKey }))
+const moduleOptions = MODULES.map((d) => ({ id: d.id, labelKey: d.labelKey, navIcon: d.navIcon }))
 const enableLabel = computed(() => t(currentDesc.value.enableLabelKey))
 const thirdField = computed(() => currentDesc.value.fields.thirdField)
 const prefetchUI = computed(() => currentDesc.value.prefetchUI)
@@ -79,13 +78,6 @@ const showPrefetchSection = computed(
     prefetchUI.value === 'pypiWheel' ||
     prefetchUI.value === 'arch' ||
     moduleId.value === 'maven',
-)
-
-const moduleCacheTo = computed(() =>
-  currentDesc.value.nav.catalog ? `/packages?module=${moduleId.value}` : '',
-)
-const modulePrefetchTo = computed(() =>
-  currentDesc.value.nav.prefetch ? `/prefetch?module=${moduleId.value}` : '',
 )
 
 /** 旧链接 /platform?tab=download|cache → 系统设置；tab=prefetch → PyPI 模块 */
@@ -198,12 +190,17 @@ function draftFromConfig(
   defaults: (typeof MODULES)[0]['defaults'],
   persistToken: boolean,
 ): PlatformDraft {
+  // 有配置时保留空串（表示走 Match 默认上游）；无配置时用模块 defaults 填表
   return {
     enabled: !!cfg?.enabled,
-    upstream: cfg?.upstream || defaults.upstream,
-    file_upstream: cfg?.file_upstream || cfg?.upstream || defaults.file_upstream,
-    metadata_upstream: cfg?.metadata_upstream || defaults.metadata_upstream || '',
-    upstream_token: persistToken ? cfg?.upstream_token || '' : '',
+    upstream: cfg ? String(cfg.upstream ?? '') : defaults.upstream,
+    file_upstream: cfg
+      ? String(cfg.file_upstream ?? cfg.upstream ?? '')
+      : defaults.file_upstream,
+    metadata_upstream: cfg
+      ? String(cfg.metadata_upstream ?? '')
+      : defaults.metadata_upstream || '',
+    upstream_token: persistToken ? (cfg?.upstream_token || '') : '',
   }
 }
 
@@ -214,8 +211,6 @@ function applyPrefetchFromConfig(sch: AppConfig['scheduler'] | undefined) {
   const tp = pf?.target_python
   prefetchForm.target_python = Array.isArray(tp) ? tp.join('\n') : tp || '3.10\n3.11\n3.12'
   prefetchForm.target_platforms = normalizePlatforms(pf?.target_platforms, pf?.target_platform)
-  prefetchForm.max_depth = pf?.max_depth ?? 5
-  prefetchForm.max_packages = pf?.max_packages ?? 200
 }
 
 function linesToList(raw: string): string[] {
@@ -294,8 +289,6 @@ async function save() {
           ? [...prefetchForm.target_platforms]
           : ['linux'],
         target_platform: prefetchForm.target_platforms[0] || 'linux',
-        max_depth: prefetchForm.max_depth,
-        max_packages: prefetchForm.max_packages,
       },
       small_file_boost: prevSch?.small_file_boost || {
         enabled: true,
@@ -446,15 +439,9 @@ onMounted(() => {
 
 <template>
   <div>
-    <PageHeader :title="t('platform.title')" :description="t('platform.subtitle')">
+    <PageHeader :title="t('platform.title')">
       <template #actions>
         <span v-if="dirty" class="ui-badge-warn">{{ t('common.unsaved') }}</span>
-        <RouterLink v-if="moduleCacheTo" class="ui-btn" :to="moduleCacheTo">
-          {{ t(currentDesc.nav.catalogLabelKey) }}
-        </RouterLink>
-        <RouterLink v-if="modulePrefetchTo" class="ui-btn" :to="modulePrefetchTo">
-          {{ t('nav.prefetch') }}
-        </RouterLink>
         <button class="ui-btn" :disabled="loading || saving || testing" @click="testAccess">
           {{ testing ? t('platform.testing') : t('platform.testAccess') }}
         </button>
@@ -465,15 +452,20 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <div class="mb-4 flex flex-wrap gap-1 rounded-xl border border-line bg-panel/60 p-1">
+    <div class="mb-5 flex flex-wrap gap-1 rounded-xl border border-line bg-panel/70 p-1">
       <button
         v-for="item in moduleOptions"
         :key="item.id"
         type="button"
-        class="ui-tab"
+        class="ui-tab inline-flex items-center"
         :class="{ 'ui-tab-active': moduleId === item.id }"
         @click="setModule(item.id)"
       >
+        <ModuleIcon
+          :name="item.navIcon"
+          class="mr-1.5 h-4 w-4 shrink-0"
+          :style="{ color: moduleColor(item.id) }"
+        />
         {{ t(item.labelKey) }}
       </button>
     </div>
@@ -504,11 +496,19 @@ onMounted(() => {
         <div class="grid gap-4 sm:grid-cols-2">
           <div :class="unifiedUpstream ? 'sm:col-span-2' : ''">
             <label class="ui-label">{{ t(currentDesc.labels.upstreamKey) }}</label>
-            <input v-model="form.upstream" class="ui-input" />
+            <input
+              v-model="form.upstream"
+              class="ui-input"
+              :placeholder="currentDesc.defaults.upstream"
+            />
           </div>
           <div v-if="!unifiedUpstream">
             <label class="ui-label">{{ t(currentDesc.labels.fileUpstreamKey) }}</label>
-            <input v-model="form.file_upstream" class="ui-input" />
+            <input
+              v-model="form.file_upstream"
+              class="ui-input"
+              :placeholder="currentDesc.defaults.file_upstream"
+            />
           </div>
 
           <div v-if="thirdField === 'metadata'" class="sm:col-span-2">
@@ -603,16 +603,6 @@ onMounted(() => {
               </button>
             </div>
           </div>
-          <div>
-            <label class="ui-label">{{ t('platform.maxPackages') }}</label>
-            <input
-              v-model.number="prefetchForm.max_packages"
-              type="number"
-              min="1"
-              max="2000"
-              class="ui-input"
-            />
-          </div>
           <div class="sm:col-span-3">
             <label class="ui-label">{{ t('platform.extraWheelTags') }}</label>
             <textarea
@@ -640,20 +630,6 @@ onMounted(() => {
                 {{ t(opt.labelKey) }}
               </button>
             </div>
-          </div>
-        </div>
-
-        <div v-else-if="moduleId === 'maven'" class="grid gap-4 sm:grid-cols-3">
-          <div>
-            <label class="ui-label">{{ t('platform.maxPackages') }}</label>
-            <input
-              v-model.number="prefetchForm.max_packages"
-              type="number"
-              min="1"
-              max="2000"
-              class="ui-input"
-            />
-            <p class="mt-1 text-xs text-muted">{{ t('platform.mavenMaxPackagesHint') }}</p>
           </div>
         </div>
       </section>

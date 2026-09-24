@@ -201,20 +201,20 @@ func notifyProgress(opt Options, done, total int64) {
 // GetOrDownload 预取/后台下载：命中缓存或分片/串行拉取。与 ServePackage 共享 inflight 去重。
 func (e *Engine) GetOrDownload(ctx context.Context, opt Options) (*Result, error) {
 	opt.resolveExpectedDigest()
-	if entry, ok := e.cache.Get(opt.CacheKey); ok {
-		// 预取命中也必须占任务槽，避免海量缓存命中同时 MarkRunning 冲破并发上限
-		var pl *ratelimit.PlatformLimiter
-		if opt.Prefetch {
-			pl = e.limiters.Get(opt.Platform)
-			if err := e.acquireTaskSlot(ctx, pl, opt); err != nil {
-				return nil, err
+		if entry, ok := e.cache.Get(opt.CacheKey, opt.Platform); ok {
+			// 预取命中也必须占任务槽，避免海量缓存命中同时 MarkRunning 冲破并发上限
+			var pl *ratelimit.PlatformLimiter
+			if opt.Prefetch {
+				pl = e.limiters.Get(opt.Platform)
+				if err := e.acquireTaskSlot(ctx, pl, opt); err != nil {
+					return nil, err
+				}
+				defer pl.ReleaseTask(opt.Boost)
 			}
-			defer pl.ReleaseTask(opt.Boost)
+			notifyProgress(opt, entry.Size, entry.Size)
+			notifyAcquired(opt)
+			return &Result{Entry: entry, ContentType: entry.ContentType, Size: entry.Size, FromCache: true, Strategy: "cache"}, nil
 		}
-		notifyProgress(opt, entry.Size, entry.Size)
-		notifyAcquired(opt)
-		return &Result{Entry: entry, ContentType: entry.ContentType, Size: entry.Size, FromCache: true, Strategy: "cache"}, nil
-	}
 	runCtx, cancel := context.WithCancel(ctx)
 	wait := &inflightWait{done: make(chan struct{}), mode: inflightModeFetch, cancel: cancel}
 	actual, loaded := e.inflight.LoadOrStore(opt.CacheKey, wait)
@@ -232,7 +232,7 @@ func (e *Engine) GetOrDownload(ctx context.Context, opt Options) (*Result, error
 		if sw.entry != nil {
 			return &Result{Entry: sw.entry, ContentType: sw.ct, Size: sw.size, FromCache: true, Strategy: "cache"}, nil
 		}
-		if entry, ok := e.cache.Get(opt.CacheKey); ok {
+		if entry, ok := e.cache.Get(opt.CacheKey, opt.Platform); ok {
 			return &Result{Entry: entry, ContentType: entry.ContentType, Size: entry.Size, FromCache: true, Strategy: "cache"}, nil
 		}
 		return nil, fmt.Errorf("download finished but cache miss")
@@ -919,7 +919,7 @@ func (e *Engine) readProxyBody(ctx context.Context, resp *http.Response, platfor
 func (e *Engine) FetchSimpleIndex(ctx context.Context, indexURL, platName string, ttlSeconds int, prefetch bool) ([]byte, string, error) {
 	cacheKey := "pypi:index:" + cache.KeyFromURL(indexURL)
 	if ttlSeconds > 0 {
-		if entry, ok := e.cache.Get(cacheKey); ok {
+		if entry, ok := e.cache.Get(cacheKey, platName); ok {
 			data, err := os.ReadFile(entry.FilePath)
 			if err != nil {
 				return nil, "", err
@@ -958,7 +958,7 @@ func (e *Engine) FetchSimpleIndex(ctx context.Context, indexURL, platName string
 func (e *Engine) FetchMetadata(ctx context.Context, metaURL, platName string, ttlSeconds int, prefetch bool) ([]byte, error) {
 	cacheKey := cache.KeyFromURL(metaURL)
 	if ttlSeconds > 0 {
-		if entry, ok := e.cache.Get(cacheKey); ok {
+		if entry, ok := e.cache.Get(cacheKey, platName); ok {
 			return os.ReadFile(entry.FilePath)
 		}
 	}
