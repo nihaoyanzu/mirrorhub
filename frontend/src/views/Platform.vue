@@ -219,8 +219,8 @@ async function load() {
     const npm = cfg.platforms?.npm
     platformDrafts.npm = {
       enabled: !!npm?.enabled,
-      upstream: npm?.upstream || 'https://registry.npmjs.org',
-      file_upstream: npm?.file_upstream || npm?.upstream || 'https://registry.npmjs.org',
+      upstream: npm?.upstream || 'https://registry.npmmirror.com',
+      file_upstream: npm?.file_upstream || npm?.upstream || 'https://registry.npmmirror.com',
       metadata_upstream: npm?.metadata_upstream || '',
       upstream_token: '',
       concurrency: npm?.download?.concurrency ?? 16,

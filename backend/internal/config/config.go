@@ -351,8 +351,8 @@ func defaultRuntime() RuntimeSettings {
 			},
 			"npm": {
 				Enabled:      true,
-				Upstream:     "https://registry.npmjs.org",
-				FileUpstream: "https://registry.npmjs.org",
+				Upstream:     "https://registry.npmmirror.com",
+				FileUpstream: "https://registry.npmmirror.com",
 				Download: DownloadConfig{
 					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 				},
@@ -384,7 +384,7 @@ func defaultRuntime() RuntimeSettings {
 				},
 			},
 			"maven": {
-				Enabled:      false,
+				Enabled:      true,
 				Upstream:     "https://maven.aliyun.com/repository/central",
 				FileUpstream: "https://maven.aliyun.com/repository/central",
 				Download: DownloadConfig{
@@ -511,8 +511,8 @@ func applyDefaults(cfg *Config) {
 	if _, ok := cfg.Platforms["npm"]; !ok {
 		cfg.Platforms["npm"] = PlatformConfig{
 			Enabled:      true,
-			Upstream:     "https://registry.npmjs.org",
-			FileUpstream: "https://registry.npmjs.org",
+			Upstream:     "https://registry.npmmirror.com",
+			FileUpstream: "https://registry.npmmirror.com",
 			Download: DownloadConfig{
 				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 			},
@@ -529,10 +529,17 @@ func applyDefaults(cfg *Config) {
 			p.Download.MinSize = 100 * 1024
 		}
 		if p.Upstream == "" {
-			p.Upstream = "https://registry.npmjs.org"
+			p.Upstream = "https://registry.npmmirror.com"
 		}
 		if p.FileUpstream == "" {
 			p.FileUpstream = p.Upstream
+		}
+		// 旧默认官方源迁到国内镜像（仅当仍为官方默认时）
+		if p.Upstream == "https://registry.npmjs.org" {
+			p.Upstream = "https://registry.npmmirror.com"
+		}
+		if p.FileUpstream == "https://registry.npmjs.org" {
+			p.FileUpstream = "https://registry.npmmirror.com"
 		}
 		p.RateLimit = nil
 		cfg.Platforms["npm"] = p
@@ -635,10 +642,10 @@ func applyDefaults(cfg *Config) {
 		p.RateLimit = nil
 		cfg.Platforms["huggingface"] = p
 	}
-	// 旧库无 maven 条目时补齐（默认关闭）
+	// 旧库无 maven 条目时补齐（默认开启）
 	if _, ok := cfg.Platforms["maven"]; !ok {
 		cfg.Platforms["maven"] = PlatformConfig{
-			Enabled:      false,
+			Enabled:      true,
 			Upstream:     "https://maven.aliyun.com/repository/central",
 			FileUpstream: "https://maven.aliyun.com/repository/central",
 			Download: DownloadConfig{

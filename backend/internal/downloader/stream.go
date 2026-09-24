@@ -302,38 +302,19 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 			return nil, ct, written, err
 		}
 
-		reqCtx, reqCancel := context.WithCancel(ctx)
-		var lastProgress atomic.Int64
-		lastProgress.Store(time.Now().UnixNano())
-		watchDone := make(chan struct{})
-		go func() {
-			defer close(watchDone)
-			t := time.NewTicker(time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-reqCtx.Done():
-					return
-				case <-t.C:
-					last := time.Unix(0, lastProgress.Load())
-					if time.Since(last) >= streamStallTimeout {
-						reqCancel()
-						return
-					}
-				}
-			}
-		}()
-
 		headers := cloneHeader(opt.Headers)
 		if written > 0 {
 			headers.Set("Range", fmt.Sprintf("bytes=%d-", written))
 		}
 
-		resp, err := e.doGET(reqCtx, http.MethodGet, opt.URL, headers, 3)
+		// 建连/等响应头走父 ctx（由 Transport.ResponseHeaderTimeout 约束），
+		// stall 看门狗只盯 body 读取，避免把慢握手误判成可续传取消。
+		resp, err := e.doGET(ctx, http.MethodGet, opt.URL, headers, 3)
 		if err != nil {
-			reqCancel()
-			<-watchDone
-			if written > 0 && (isTransientNetErr(err) || errors.Is(err, context.Canceled) || errors.Is(err, errUpstreamStall)) {
+			if err := ctx.Err(); err != nil {
+				return nil, ct, written, err
+			}
+			if written > 0 && isTransientNetErr(err) {
 				if e.log != nil {
 					e.log.Warn("stream resume after request error",
 						zap.Int64("offset", written),
@@ -345,21 +326,11 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 				metrics.DownloadResumesTotal.Inc()
 				continue
 			}
-			if ctx.Err() != nil {
-				return nil, ct, written, ctx.Err()
-			}
-			if written > 0 && errors.Is(err, context.Canceled) {
-				time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
-				metrics.DownloadResumesTotal.Inc()
-				continue
-			}
 			return nil, ct, written, err
 		}
 
 		if resp.StatusCode >= 400 {
 			_ = resp.Body.Close()
-			reqCancel()
-			<-watchDone
 			return nil, ct, written, fmt.Errorf("upstream %s", resp.Status)
 		}
 
@@ -368,8 +339,6 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 		}
 		if (opt.Kind == "package" || opt.Kind == "") && isHTMLContentType(ct) {
 			_ = resp.Body.Close()
-			reqCancel()
-			<-watchDone
 			return nil, ct, written, fmt.Errorf("upstream returned HTML, not a package file")
 		}
 		if size < 0 && written == 0 {
@@ -380,20 +349,20 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 			}
 		}
 		if written > 0 && resp.StatusCode == http.StatusOK {
-			if _, err := io.CopyN(io.Discard, resp.Body, written); err != nil {
+			if _, skipErr := io.CopyN(io.Discard, resp.Body, written); skipErr != nil {
 				_ = resp.Body.Close()
-				reqCancel()
-				<-watchDone
-				if isTransientNetErr(err) || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+				if err := ctx.Err(); err != nil {
+					return nil, ct, written, err
+				}
+				if isTransientNetErr(skipErr) || errors.Is(skipErr, io.EOF) {
 					time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+					metrics.DownloadResumesTotal.Inc()
 					continue
 				}
-				return nil, ct, written, err
+				return nil, ct, written, skipErr
 			}
 		} else if written > 0 && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
 			_ = resp.Body.Close()
-			reqCancel()
-			<-watchDone
 			return nil, ct, written, fmt.Errorf("unexpected resume status %s", resp.Status)
 		}
 
@@ -412,7 +381,31 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 			headerWritten = true
 		}
 
-		n, copyErr := e.copyStreamToClientAndFile(ctx, w, f, resp.Body, pl, opt.Prefetch, idle, &lastProgress)
+		reqCtx, reqCancel := context.WithCancel(ctx)
+		var lastProgress atomic.Int64
+		lastProgress.Store(time.Now().UnixNano())
+		watchDone := make(chan struct{})
+		go func(body io.ReadCloser) {
+			defer close(watchDone)
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-reqCtx.Done():
+					return
+				case <-t.C:
+					last := time.Unix(0, lastProgress.Load())
+					if time.Since(last) >= streamStallTimeout {
+						_ = body.Close()
+						reqCancel()
+						return
+					}
+				}
+			}
+		}(resp.Body)
+
+		body := &stallAwareBody{ctx: reqCtx, body: resp.Body}
+		n, copyErr := e.copyStreamToClientAndFile(ctx, w, f, body, pl, opt.Prefetch, idle, &lastProgress)
 		_ = resp.Body.Close()
 		reqCancel()
 		<-watchDone
@@ -422,10 +415,10 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 			completed = true
 			break
 		}
-		if ctx.Err() != nil {
-			return nil, ct, written, ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return nil, ct, written, err
 		}
-		if errors.Is(copyErr, errUpstreamStall) || isTransientNetErr(copyErr) || errors.Is(copyErr, context.Canceled) {
+		if errors.Is(copyErr, errUpstreamStall) || isTransientNetErr(copyErr) {
 			if e.log != nil {
 				e.log.Warn("stream resume after stall",
 					zap.Int64("offset", written),
@@ -466,6 +459,26 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 		return nil, ct, written, err
 	}
 	return entry, ct, written, nil
+}
+
+// stallAwareBody 在 stall 看门狗取消时关闭上游 body，并把读错误归一成 errUpstreamStall。
+type stallAwareBody struct {
+	ctx  context.Context
+	body io.ReadCloser
+}
+
+func (s *stallAwareBody) Read(p []byte) (int, error) {
+	if err := s.ctx.Err(); err != nil {
+		return 0, errUpstreamStall
+	}
+	n, err := s.body.Read(p)
+	if err != nil {
+		if s.ctx.Err() != nil {
+			return n, errUpstreamStall
+		}
+		return n, err
+	}
+	return n, nil
 }
 
 func (e *Engine) copyStreamToClientAndFile(

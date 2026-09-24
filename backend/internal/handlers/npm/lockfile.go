@@ -140,7 +140,7 @@ func ReconstructTarballURL(name, version string) string {
 	if name == "" || version == "" {
 		return ""
 	}
-	base := "https://registry.npmjs.org"
+	base := "https://registry.npmmirror.com"
 	fileName := name
 	if i := strings.LastIndex(name, "/"); i >= 0 {
 		fileName = name[i+1:]

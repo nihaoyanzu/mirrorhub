@@ -32,6 +32,7 @@ const {
               <th>{{ t('access.time') }}</th>
               <th>{{ t('access.ip') }}</th>
               <th>{{ t('access.method') }}</th>
+              <th>{{ t('access.platform') }}</th>
               <th>{{ t('access.path') }}</th>
               <th>{{ t('access.cacheStatus') }}</th>
               <th class="text-right">{{ t('access.delivered') }}</th>
@@ -42,6 +43,7 @@ const {
               <td class="whitespace-nowrap text-sm text-muted">{{ fmtTime(r.at) }}</td>
               <td class="font-mono text-sm">{{ r.ip }}</td>
               <td class="font-mono text-sm">{{ r.method }}</td>
+              <td class="font-mono text-sm">{{ r.platform || '—' }}</td>
               <td class="max-w-[480px] truncate font-mono text-sm text-muted" :title="r.path">
                 {{ r.path }}
               </td>
