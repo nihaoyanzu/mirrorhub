@@ -1,8 +1,10 @@
-/** 前端模块 UI 描述符：加平台时优先改此表，少改 Platform/Guide 分支。 */
+/** 前端模块 UI 描述符：加平台时优先改此表，少改 Platform/Guide/AppShell 分支。 */
 
 export type PrefetchUI = 'none' | 'hint' | 'arch' | 'pypiWheel'
 
 export type ThirdField = 'none' | 'metadata' | 'auth' | 'sumdb' | 'token'
+
+export type CatalogMode = 'pypi' | 'local'
 
 export interface ModuleDescriptor {
   id: string
@@ -13,6 +15,14 @@ export interface ModuleDescriptor {
   showPrefetchTab: boolean
   /** 公开说明页 API 失败时的兜底 enabled */
   guideDefaultEnabled: boolean
+  /** 包检索页行为：pypi=目录检索；local=本地缓存浏览 */
+  catalogMode: CatalogMode
+  nav: {
+    catalog: boolean
+    prefetch: boolean
+    catalogLabelKey: string
+    prefetchLabelKey: string
+  }
   defaults: {
     upstream: string
     file_upstream: string
@@ -20,8 +30,9 @@ export interface ModuleDescriptor {
   }
   fields: {
     thirdField: ThirdField
-    showAccessTest: boolean
     persistUpstreamToken: boolean
+    /** true：界面只编一个上游，保存时 file_upstream 与 upstream 同步 */
+    unifiedUpstream?: boolean
   }
   labels: {
     upstreamKey: string
@@ -31,6 +42,10 @@ export interface ModuleDescriptor {
   hints: {
     upstreamHintKey?: string
     prefetchHintKey?: string
+    /** 预拉取页粘贴区说明 */
+    prefetchPasteHintKey?: string
+    /** 预拉取页 textarea 占位示例 */
+    prefetchPlaceholderKey?: string
     thirdFieldHintKey?: string
     thirdFieldPlaceholder?: string
   }
@@ -45,6 +60,13 @@ export const MODULES: ModuleDescriptor[] = [
     enableLabelKey: 'platform.enablePyPI',
     showPrefetchTab: true,
     guideDefaultEnabled: true,
+    catalogMode: 'pypi',
+    nav: {
+      catalog: true,
+      prefetch: true,
+      catalogLabelKey: 'nav.pkgSearch',
+      prefetchLabelKey: 'nav.prefetch',
+    },
     defaults: {
       upstream: 'https://mirrors.aliyun.com/pypi',
       file_upstream: 'https://mirrors.aliyun.com/pypi',
@@ -52,17 +74,21 @@ export const MODULES: ModuleDescriptor[] = [
     },
     fields: {
       thirdField: 'metadata',
-      showAccessTest: true,
       persistUpstreamToken: false,
+      unifiedUpstream: true,
     },
     labels: {
-      upstreamKey: 'platform.indexUpstream',
+      upstreamKey: 'platform.pypiUpstream',
       fileUpstreamKey: 'platform.fileUpstream',
       thirdFieldKey: 'platform.metadataUpstream',
     },
     hints: {
+      upstreamHintKey: 'platform.pypiUpstreamHint',
       thirdFieldHintKey: 'platform.metadataHint',
-      thirdFieldPlaceholder: 'PEP 658；留空回退到包文件上游',
+      thirdFieldPlaceholder: 'PEP 658；留空回退到上游',
+      prefetchHintKey: 'platform.pypiPrefetchHint',
+      prefetchPasteHintKey: 'prefetch.hintPypi',
+      prefetchPlaceholderKey: 'prefetch.placeholderPypi',
     },
     prefetchUI: 'pypiWheel',
   },
@@ -71,8 +97,15 @@ export const MODULES: ModuleDescriptor[] = [
     labelKey: 'platform.moduleNpm',
     guideTitle: 'npm',
     enableLabelKey: 'platform.enableNpm',
-    showPrefetchTab: false,
+    showPrefetchTab: true,
     guideDefaultEnabled: true,
+    catalogMode: 'local',
+    nav: {
+      catalog: true,
+      prefetch: true,
+      catalogLabelKey: 'nav.localCache',
+      prefetchLabelKey: 'nav.prefetch',
+    },
     defaults: {
       upstream: 'https://registry.npmmirror.com',
       file_upstream: 'https://registry.npmmirror.com',
@@ -80,16 +113,18 @@ export const MODULES: ModuleDescriptor[] = [
     },
     fields: {
       thirdField: 'none',
-      showAccessTest: false,
       persistUpstreamToken: false,
+      unifiedUpstream: true,
     },
     labels: {
-      upstreamKey: 'platform.indexUpstream',
+      upstreamKey: 'platform.registryUpstream',
       fileUpstreamKey: 'platform.fileUpstream',
     },
     hints: {
       upstreamHintKey: 'platform.npmUpstreamHint',
       prefetchHintKey: 'platform.npmPrefetchHint',
+      prefetchPasteHintKey: 'prefetch.hintNpm',
+      prefetchPlaceholderKey: 'prefetch.placeholderNpm',
     },
     prefetchUI: 'none',
   },
@@ -100,6 +135,13 @@ export const MODULES: ModuleDescriptor[] = [
     enableLabelKey: 'platform.enableDocker',
     showPrefetchTab: true,
     guideDefaultEnabled: true,
+    catalogMode: 'local',
+    nav: {
+      catalog: true,
+      prefetch: true,
+      catalogLabelKey: 'nav.localCache',
+      prefetchLabelKey: 'nav.prefetch',
+    },
     defaults: {
       upstream: 'https://registry-1.docker.io',
       file_upstream: 'https://registry-1.docker.io',
@@ -107,8 +149,8 @@ export const MODULES: ModuleDescriptor[] = [
     },
     fields: {
       thirdField: 'auth',
-      showAccessTest: false,
       persistUpstreamToken: false,
+      unifiedUpstream: true,
     },
     labels: {
       upstreamKey: 'platform.registryUpstream',
@@ -120,6 +162,8 @@ export const MODULES: ModuleDescriptor[] = [
       prefetchHintKey: 'platform.dockerPrefetchHint',
       thirdFieldHintKey: 'platform.authUpstreamHint',
       thirdFieldPlaceholder: 'https://auth.docker.io',
+      prefetchPasteHintKey: 'prefetch.hintDocker',
+      prefetchPlaceholderKey: 'prefetch.placeholderDocker',
     },
     prefetchUI: 'arch',
   },
@@ -130,26 +174,32 @@ export const MODULES: ModuleDescriptor[] = [
     enableLabelKey: 'platform.enableGoproxy',
     showPrefetchTab: true,
     guideDefaultEnabled: true,
+    catalogMode: 'local',
+    nav: {
+      catalog: true,
+      prefetch: true,
+      catalogLabelKey: 'nav.localCache',
+      prefetchLabelKey: 'nav.prefetch',
+    },
     defaults: {
       upstream: 'https://goproxy.cn',
       file_upstream: 'https://goproxy.cn',
-      metadata_upstream: 'https://goproxy.cn',
+      metadata_upstream: '',
     },
     fields: {
-      thirdField: 'sumdb',
-      showAccessTest: false,
+      thirdField: 'none',
       persistUpstreamToken: false,
+      unifiedUpstream: true,
     },
     labels: {
       upstreamKey: 'platform.moduleUpstream',
       fileUpstreamKey: 'platform.moduleFileUpstream',
-      thirdFieldKey: 'platform.sumdbUpstream',
     },
     hints: {
       upstreamHintKey: 'platform.goproxyUpstreamHint',
       prefetchHintKey: 'platform.goproxyPrefetchHint',
-      thirdFieldHintKey: 'platform.sumdbUpstreamHint',
-      thirdFieldPlaceholder: 'https://goproxy.cn',
+      prefetchPasteHintKey: 'prefetch.hintGoproxy',
+      prefetchPlaceholderKey: 'prefetch.placeholderGoproxy',
     },
     prefetchUI: 'hint',
   },
@@ -160,6 +210,13 @@ export const MODULES: ModuleDescriptor[] = [
     enableLabelKey: 'platform.enableHuggingFace',
     showPrefetchTab: true,
     guideDefaultEnabled: true,
+    catalogMode: 'local',
+    nav: {
+      catalog: true,
+      prefetch: true,
+      catalogLabelKey: 'nav.localCache',
+      prefetchLabelKey: 'nav.prefetch',
+    },
     defaults: {
       upstream: 'https://huggingface.co',
       file_upstream: 'https://huggingface.co',
@@ -167,8 +224,8 @@ export const MODULES: ModuleDescriptor[] = [
     },
     fields: {
       thirdField: 'token',
-      showAccessTest: false,
       persistUpstreamToken: true,
+      unifiedUpstream: true,
     },
     labels: {
       upstreamKey: 'platform.hubUpstream',
@@ -179,6 +236,8 @@ export const MODULES: ModuleDescriptor[] = [
       upstreamHintKey: 'platform.huggingfaceUpstreamHint',
       prefetchHintKey: 'platform.huggingfacePrefetchHint',
       thirdFieldHintKey: 'platform.upstreamTokenHint',
+      prefetchPasteHintKey: 'prefetch.hintHuggingFace',
+      prefetchPlaceholderKey: 'prefetch.placeholderHuggingFace',
     },
     prefetchUI: 'hint',
   },
@@ -189,6 +248,13 @@ export const MODULES: ModuleDescriptor[] = [
     enableLabelKey: 'platform.enableMaven',
     showPrefetchTab: true,
     guideDefaultEnabled: false,
+    catalogMode: 'local',
+    nav: {
+      catalog: true,
+      prefetch: true,
+      catalogLabelKey: 'nav.localCache',
+      prefetchLabelKey: 'nav.prefetch',
+    },
     defaults: {
       upstream: 'https://maven.aliyun.com/repository/central',
       file_upstream: 'https://maven.aliyun.com/repository/central',
@@ -196,8 +262,8 @@ export const MODULES: ModuleDescriptor[] = [
     },
     fields: {
       thirdField: 'none',
-      showAccessTest: false,
       persistUpstreamToken: false,
+      unifiedUpstream: true,
     },
     labels: {
       upstreamKey: 'platform.mavenRepoUpstream',
@@ -206,6 +272,8 @@ export const MODULES: ModuleDescriptor[] = [
     hints: {
       upstreamHintKey: 'platform.mavenUpstreamHint',
       prefetchHintKey: 'platform.mavenPrefetchHint',
+      prefetchPasteHintKey: 'prefetch.hintMaven',
+      prefetchPlaceholderKey: 'prefetch.placeholderMaven',
     },
     prefetchUI: 'hint',
   },
@@ -221,4 +289,14 @@ export function isKnownModule(id: string): boolean {
 
 export function guideFallbackModules(): { id: string; enabled: boolean }[] {
   return MODULES.map((d) => ({ id: d.id, enabled: d.guideDefaultEnabled }))
+}
+
+/** 侧栏/路由：具备包检索二级入口的模块 */
+export function modulesWithCatalogNav(enabled: Record<string, boolean>): ModuleDescriptor[] {
+  return MODULES.filter((d) => d.nav.catalog && enabled[d.id])
+}
+
+/** 侧栏/路由：具备预拉取二级入口的模块 */
+export function modulesWithPrefetchNav(enabled: Record<string, boolean>): ModuleDescriptor[] {
+  return MODULES.filter((d) => d.nav.prefetch && enabled[d.id])
 }

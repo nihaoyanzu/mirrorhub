@@ -99,16 +99,27 @@ export const api = {
   getQueue: () => request<QueueResponse>('/api/v1/queue'),
   getCache: () => request<CacheStats>('/api/v1/cache'),
   clearCache: () => request<void>('/api/v1/cache', { method: 'DELETE' }),
-  listPackages: (params?: { q?: string; page?: number; page_size?: number }) => {
+  listPackages: (params?: {
+    q?: string
+    page?: number
+    page_size?: number
+    platform?: string
+  }) => {
     const sp = new URLSearchParams()
     if (params?.q) sp.set('q', params.q)
     if (params?.page) sp.set('page', String(params.page))
     if (params?.page_size) sp.set('page_size', String(params.page_size))
+    if (params?.platform) sp.set('platform', params.platform)
     const qs = sp.toString()
     return request<PackageListResponse>(`/api/v1/packages${qs ? `?${qs}` : ''}`)
   },
-  getPackage: (name: string, upstream = true) =>
-    request<PackageDetail>(`/api/v1/packages/${encodeURIComponent(name)}?upstream=${upstream ? '1' : '0'}`),
+  getPackage: (name: string, opts?: { upstream?: boolean; platform?: string }) => {
+    const sp = new URLSearchParams()
+    sp.set('name', name)
+    sp.set('upstream', opts?.upstream === false ? '0' : '1')
+    if (opts?.platform) sp.set('platform', opts.platform)
+    return request<PackageDetail>(`/api/v1/packages/detail?${sp.toString()}`)
+  },
   deletePackageEntry: (key: string) =>
     request<void>(`/api/v1/packages/entry?key=${encodeURIComponent(key)}`, { method: 'DELETE' }),
   prefetch: (urls: string[], text?: string) =>

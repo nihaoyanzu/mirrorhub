@@ -44,15 +44,38 @@ type packageSummary struct {
 }
 
 func (s *Server) listPackages(w http.ResponseWriter, r *http.Request) {
-	q := pypihandler.NormalizeName(r.URL.Query().Get("q"))
+	platform := normalizePlatformQuery(r.URL.Query().Get("platform"))
 	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
 	pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), defaultPackagePageSize)
 	if pageSize > maxPackagePageSize {
 		pageSize = maxPackagePageSize
 	}
+
+	// 非 PyPI：浏览该平台本地缓存（允许空查询列出全部）
+	if platform != "pypi" {
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		out, total := s.listLocalPlatformPackages(platform, q, page, pageSize)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"platform":           platform,
+			"mode":               "local",
+			"packages":           out,
+			"total":              total,
+			"page":               page,
+			"page_size":          pageSize,
+			"catalog_size":       total,
+			"catalog_ready":      true,
+			"catalog_refreshing": false,
+			"catalog_error":      "",
+		})
+		return
+	}
+
+	q := pypihandler.NormalizeName(r.URL.Query().Get("q"))
 	s.ensureCatalogLoaded()
 
 	meta := s.catalogMetaJSON()
+	meta["platform"] = "pypi"
+	meta["mode"] = "catalog"
 	meta["page"] = page
 	meta["page_size"] = pageSize
 	if q == "" {
@@ -79,7 +102,22 @@ func (s *Server) listPackages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getPackage(w http.ResponseWriter, r *http.Request) {
-	name := pypihandler.NormalizeName(strings.TrimSpace(chi.URLParam(r, "name")))
+	platform := normalizePlatformQuery(r.URL.Query().Get("platform"))
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		name = strings.TrimSpace(chi.URLParam(r, "name"))
+	}
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+
+	if platform != "pypi" {
+		writeJSON(w, http.StatusOK, s.getLocalPlatformPackage(platform, name))
+		return
+	}
+
+	name = pypihandler.NormalizeName(name)
 	if name == "" {
 		http.Error(w, "name required", http.StatusBadRequest)
 		return
@@ -140,17 +178,18 @@ func (s *Server) getPackage(w http.ResponseWriter, r *http.Request) {
 	})
 
 	out := map[string]any{
-		"name":            name,
-		"versions":        versions, // 本地已有发行文件的版本
-		"index_versions":  indexVersions,
-		"files":           localFiles,
-		"file_count":      len(localFiles),
-		"package_count":   packageCount,
-		"total_size":      totalSize,
-		"has_index":       hasIndex,
-		"cached":          packageCount > 0,
-		"upstream":        nil,
-		"upstream_error":  "",
+		"name":           name,
+		"platform":       "pypi",
+		"versions":       versions,
+		"index_versions": indexVersions,
+		"files":          localFiles,
+		"file_count":     len(localFiles),
+		"package_count":  packageCount,
+		"total_size":     totalSize,
+		"has_index":      hasIndex,
+		"cached":         packageCount > 0,
+		"upstream":       nil,
+		"upstream_error": "",
 	}
 
 	if wantUpstream {

@@ -22,17 +22,6 @@ const snippets = computed<GuideSnippet[]>(() => [
     title: t('guide.dockerDaemon'),
     text: `{\n  "registry-mirrors": ["${props.baseURL}"],\n  "insecure-registries": ["${props.displayHost}"]\n}`,
   },
-  {
-    key: 'dockerPull',
-    title: t('guide.dockerPull'),
-    text: `# 重启 dockerd 后正常 pull，经 MirrorHub 自动灌缓存\ndocker pull nginx:1.27`,
-  },
-  {
-    key: 'dockerOffline',
-    title: t('guide.dockerOffline'),
-    text: t('guide.dockerOfflineBody'),
-    hideCopy: true,
-  },
 ])
 </script>
 

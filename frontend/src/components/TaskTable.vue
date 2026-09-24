@@ -38,9 +38,12 @@ const tasksRef = toRef(props, 'tasks')
 const { page, size, total, pageCount, slice, go } = usePagination(tasksRef, props.pageSize)
 
 const selected = ref<Set<string>>(new Set())
+const expandedId = ref<string | null>(null)
 const cancelling = ref(false)
 const showCancelModal = ref(false)
 const headerCheck = ref<HTMLInputElement | null>(null)
+
+const colCount = computed(() => (props.showPriority ? 8 : 7))
 
 const effectiveEmptyTitle = computed(() => props.emptyTitle || t('common.noData'))
 const effectiveEmptyDesc = computed(() => props.emptyDescription || undefined)
@@ -49,6 +52,18 @@ function canCancel(task: QueueTask) {
   if (task.status !== 'running' && task.status !== 'queued') return false
   if (props.showPriority) return task.priority === 'P2' || task.priority === 'P1'
   return true
+}
+
+function hasErrorDetail(task: QueueTask) {
+  return task.status === 'error' && !!(task.error || task.url || task.detail)
+}
+
+function isExpanded(id: string) {
+  return expandedId.value === id
+}
+
+function toggleExpand(id: string) {
+  expandedId.value = expandedId.value === id ? null : id
 }
 
 function taskTitle(task: QueueTask) {
@@ -103,6 +118,7 @@ watch(
   () => {
     const alive = new Set(props.tasks.map((task) => task.id))
     selected.value = new Set([...selected.value].filter((id) => alive.has(id)))
+    if (expandedId.value && !alive.has(expandedId.value)) expandedId.value = null
   },
 )
 
@@ -195,62 +211,102 @@ async function confirmCancelSelected() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="task in slice" :key="task.id">
-            <td>
-              <input
-                v-if="canCancel(task)"
-                type="checkbox"
-                class="accent-accent"
-                :checked="selected.has(task.id)"
-                @change="toggleOne(task.id, ($event.target as HTMLInputElement).checked)"
-              />
-            </td>
-            <td v-if="showPriority">
-              <span :class="prioClass(task.priority)">{{ t(prioKey(task.priority)) }}</span>
-            </td>
-            <td>
-              <span :class="statusClass(task.status)">{{ t(statusKey(task.status)) }}</span>
-            </td>
-            <td>{{ task.platform }}</td>
-            <td class="min-w-[220px] max-w-[420px]">
-              <div class="truncate text-sm text-fg" :title="taskTitle(task)">{{ taskTitle(task) }}</div>
-              <div v-if="taskSub(task)" class="mt-0.5 truncate font-mono text-xs text-muted" :title="taskSub(task)">
-                {{ taskSub(task) }}
-              </div>
-              <div v-if="progressPct(task) != null" class="mt-1.5">
-                <div class="h-1.5 overflow-hidden rounded bg-line">
-                  <div
-                    class="h-full rounded bg-accent transition-[width] duration-200"
-                    :style="{ width: `${progressPct(task)}%` }"
-                  />
+          <template v-for="task in slice" :key="task.id">
+            <tr
+              :class="hasErrorDetail(task) ? 'cursor-pointer hover:bg-panel/80' : ''"
+              @click="hasErrorDetail(task) && toggleExpand(task.id)"
+            >
+              <td @click.stop>
+                <input
+                  v-if="canCancel(task)"
+                  type="checkbox"
+                  class="accent-accent"
+                  :checked="selected.has(task.id)"
+                  @change="toggleOne(task.id, ($event.target as HTMLInputElement).checked)"
+                />
+              </td>
+              <td v-if="showPriority">
+                <span :class="prioClass(task.priority)">{{ t(prioKey(task.priority)) }}</span>
+              </td>
+              <td>
+                <span :class="statusClass(task.status)">{{ t(statusKey(task.status)) }}</span>
+              </td>
+              <td>{{ task.platform }}</td>
+              <td class="min-w-[220px] max-w-[420px]">
+                <div class="flex items-start gap-1.5">
+                  <span
+                    v-if="hasErrorDetail(task)"
+                    class="mt-0.5 shrink-0 select-none text-xs text-muted"
+                    aria-hidden="true"
+                  >{{ isExpanded(task.id) ? '▾' : '▸' }}</span>
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-sm text-fg" :title="taskTitle(task)">{{ taskTitle(task) }}</div>
+                    <div
+                      v-if="taskSub(task) && !isExpanded(task.id)"
+                      class="mt-0.5 truncate font-mono text-xs text-muted"
+                      :title="taskSub(task)"
+                    >
+                      {{ taskSub(task) }}
+                    </div>
+                    <div v-if="progressPct(task) != null" class="mt-1.5">
+                      <div class="h-1.5 overflow-hidden rounded bg-line">
+                        <div
+                          class="h-full rounded bg-accent transition-[width] duration-200"
+                          :style="{ width: `${progressPct(task)}%` }"
+                        />
+                      </div>
+                      <div class="mt-0.5 font-mono text-xs text-muted">{{ progressText(task) }}</div>
+                    </div>
+                    <div
+                      v-if="task.error && !isExpanded(task.id)"
+                      class="mt-1 truncate text-xs text-danger"
+                      :title="task.error"
+                    >
+                      {{ task.error }}
+                    </div>
+                  </div>
                 </div>
-                <div class="mt-0.5 font-mono text-xs text-muted">{{ progressText(task) }}</div>
-              </div>
-              <div v-if="task.error" class="mt-1 truncate text-xs text-danger" :title="task.error">
-                {{ task.error }}
-              </div>
-            </td>
-            <td class="whitespace-nowrap font-mono text-xs text-muted">
-              {{ fmtDurationMs(task.wait_ms, locale) }}
-            </td>
-            <td class="whitespace-nowrap font-mono text-xs text-muted">
-              {{
-                task.status === 'queued'
-                  ? '-'
-                  : fmtDurationMs(task.elapsed_ms, locale)
-              }}
-            </td>
-            <td>
-              <button
-                v-if="canCancel(task)"
-                type="button"
-                class="ui-btn-danger !px-2 !py-1 text-xs"
-                @click="emit('cancel', task.id)"
-              >
-                {{ t('queue.cancelAction') }}
-              </button>
-            </td>
-          </tr>
+              </td>
+              <td class="whitespace-nowrap font-mono text-xs text-muted">
+                {{ fmtDurationMs(task.wait_ms, locale) }}
+              </td>
+              <td class="whitespace-nowrap font-mono text-xs text-muted">
+                {{
+                  task.status === 'queued'
+                    ? '-'
+                    : fmtDurationMs(task.elapsed_ms, locale)
+                }}
+              </td>
+              <td @click.stop>
+                <button
+                  v-if="canCancel(task)"
+                  type="button"
+                  class="ui-btn-danger !px-2 !py-1 text-xs"
+                  @click="emit('cancel', task.id)"
+                >
+                  {{ t('queue.cancelAction') }}
+                </button>
+              </td>
+            </tr>
+            <tr v-if="hasErrorDetail(task) && isExpanded(task.id)" class="bg-panel/40">
+              <td :colspan="colCount" class="!whitespace-normal px-4 py-3">
+                <div class="space-y-2 text-xs">
+                  <div v-if="task.error">
+                    <div class="mb-1 font-medium text-danger">{{ t('status.error') }}</div>
+                    <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-danger/90">{{ task.error }}</pre>
+                  </div>
+                  <div v-if="task.detail && task.detail !== task.label">
+                    <div class="mb-1 font-medium text-muted">{{ t('queue.task') }}</div>
+                    <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-muted">{{ task.detail }}</pre>
+                  </div>
+                  <div v-if="task.url">
+                    <div class="mb-1 font-medium text-muted">URL</div>
+                    <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-muted">{{ task.url }}</pre>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
       <EmptyState

@@ -1,27 +1,28 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import ModalDialog from '@/components/ModalDialog.vue'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
-import type { AccessTestCheck, AppConfig, PlatformConfig } from '@/types/api'
+import { useModulesStore } from '@/stores/modules'
+import type { AccessTestModule, AppConfig, PlatformConfig } from '@/types/api'
 import { isKnownModule, MODULE_BY_ID, MODULES } from '@/modules/registry'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const toast = useToastStore()
+const modulesStore = useModulesStore()
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 const dirty = ref(false)
-const tab = ref<'access' | 'download' | 'prefetch' | 'cache'>('access')
 const moduleId = ref(MODULES[0].id)
-const showClearModal = ref(false)
-const clearing = ref(false)
-const testChecks = ref<AccessTestCheck[] | null>(null)
+const testModalVisible = ref(false)
+const testModules = ref<AccessTestModule[] | null>(null)
+const testPhase = ref<'idle' | 'running' | 'done'>('idle')
 
 const form = reactive({
   enabled: true,
@@ -29,27 +30,21 @@ const form = reactive({
   file_upstream: MODULES[0].defaults.file_upstream,
   metadata_upstream: MODULES[0].defaults.metadata_upstream || '',
   upstream_token: '',
-  concurrency: 16,
-  chunk_size: 5242880,
-  min_size: 102400,
-  idle_quota_ratio: 0.3,
-  on_interactive: 'pause',
-  resume_on_idle: true,
-  artifact_mode: 'portable',
-  extra_wheel_tags: '',
-  target_python: '3.10\n3.11\n3.12',
-  target_platforms: ['linux'] as string[],
-  max_packages: 200,
-  small_file_boost_enabled: true,
-  small_file_boost_kb: 512,
-  index_ttl_seconds: 604800,
-  package_ttl_seconds: 0,
-  max_size_gb: 100,
 })
 
 /** 系统级字段：探测时只读带入，不在本页编辑 */
 const systemNet = reactive({
   upstream_proxy: '',
+})
+
+/** 预取制品策略（scheduler.prefetch 中的平台相关字段，按模块页编辑） */
+const prefetchForm = reactive({
+  artifact_mode: 'portable',
+  extra_wheel_tags: '',
+  target_python: '3.10\n3.11\n3.12',
+  target_platforms: ['linux'] as string[],
+  max_packages: 200,
+  max_depth: 5,
 })
 
 type PlatformDraft = {
@@ -58,34 +53,10 @@ type PlatformDraft = {
   file_upstream: string
   metadata_upstream: string
   upstream_token: string
-  concurrency: number
-  chunk_size: number
-  min_size: number
 }
 
 /** 切换模块时暂存各平台表单，避免丢失未保存编辑以外的已加载值 */
 const platformDrafts = reactive<Record<string, PlatformDraft>>({})
-
-const currentDesc = computed(() => MODULE_BY_ID[moduleId.value] || MODULES[0])
-
-const tabs = computed(() => {
-  const base: { id: 'access' | 'download' | 'prefetch' | 'cache'; label: string }[] = [
-    { id: 'access', label: t('platform.tabAccess') },
-    { id: 'download', label: t('platform.tabDownload') },
-  ]
-  if (currentDesc.value.showPrefetchTab) {
-    base.push({ id: 'prefetch', label: t('platform.tabPrefetch') })
-  }
-  base.push({ id: 'cache', label: t('platform.tabCache') })
-  return base
-})
-
-const moduleOptions = MODULES.map((d) => ({ id: d.id, labelKey: d.labelKey }))
-
-const enableLabel = computed(() => t(currentDesc.value.enableLabelKey))
-
-const thirdField = computed(() => currentDesc.value.fields.thirdField)
-const prefetchUI = computed(() => currentDesc.value.prefetchUI)
 
 const platformOptions = [
   { id: 'linux', labelKey: 'platform.platLinux' },
@@ -95,6 +66,106 @@ const platformOptions = [
   { id: 'darwin', labelKey: 'platform.platDarwin' },
   { id: 'darwin-arm', labelKey: 'platform.platDarwinArm' },
 ] as const
+
+const currentDesc = computed(() => MODULE_BY_ID[moduleId.value] || MODULES[0])
+const moduleOptions = MODULES.map((d) => ({ id: d.id, labelKey: d.labelKey }))
+const enableLabel = computed(() => t(currentDesc.value.enableLabelKey))
+const thirdField = computed(() => currentDesc.value.fields.thirdField)
+const prefetchUI = computed(() => currentDesc.value.prefetchUI)
+const unifiedUpstream = computed(() => !!currentDesc.value.fields.unifiedUpstream)
+/** 仅有可编辑控件时展示独立预取区；纯说明并入上方上游区 */
+const showPrefetchSection = computed(
+  () =>
+    prefetchUI.value === 'pypiWheel' ||
+    prefetchUI.value === 'arch' ||
+    moduleId.value === 'maven',
+)
+
+const moduleCacheTo = computed(() =>
+  currentDesc.value.nav.catalog ? `/packages?module=${moduleId.value}` : '',
+)
+const modulePrefetchTo = computed(() =>
+  currentDesc.value.nav.prefetch ? `/prefetch?module=${moduleId.value}` : '',
+)
+
+/** 旧链接 /platform?tab=download|cache → 系统设置；tab=prefetch → PyPI 模块 */
+function redirectLegacyTabs() {
+  const q = String(route.query.tab || '')
+  if (q === 'download' || q === 'cache') {
+    router.replace({ path: '/settings', query: { tab: q } })
+    return true
+  }
+  if (q === 'prefetch') {
+    router.replace({ path: '/platform', query: { module: 'pypi' } })
+    return true
+  }
+  if (q === 'rate') {
+    router.replace({ path: '/settings', query: { tab: 'download' } })
+    return true
+  }
+  return false
+}
+
+function syncModuleFromRoute() {
+  if (redirectLegacyTabs()) return
+  const raw = route.query.module
+  const mod = String(Array.isArray(raw) ? raw[0] : raw || '')
+  if (isKnownModule(mod) && mod !== moduleId.value) {
+    snapshotCurrentPlatform()
+    moduleId.value = mod
+    applyPlatformDraft(moduleId.value)
+  }
+}
+
+function ensureDraft(id: string) {
+  if (platformDrafts[id]) return
+  const desc = MODULE_BY_ID[id]
+  if (!desc) return
+  platformDrafts[id] = draftFromConfig(
+    undefined,
+    desc.defaults,
+    desc.fields.persistUpstreamToken,
+  )
+}
+
+function snapshotCurrentPlatform() {
+  const desc = MODULE_BY_ID[moduleId.value]
+  const fileUp = desc?.fields.unifiedUpstream ? form.upstream : form.file_upstream
+  platformDrafts[moduleId.value] = {
+    enabled: form.enabled,
+    upstream: form.upstream,
+    file_upstream: fileUp,
+    metadata_upstream: form.metadata_upstream,
+    upstream_token: form.upstream_token,
+  }
+}
+
+function applyPlatformDraft(id: string) {
+  ensureDraft(id)
+  const d = platformDrafts[id]
+  if (!d) return
+  form.enabled = d.enabled
+  form.upstream = d.upstream
+  form.file_upstream = d.file_upstream
+  form.metadata_upstream = d.metadata_upstream
+  form.upstream_token = d.upstream_token || ''
+}
+
+function setModule(id: string) {
+  if (id === moduleId.value || !isKnownModule(id)) return
+  snapshotCurrentPlatform()
+  moduleId.value = id
+  applyPlatformDraft(id)
+  // 只保留 module，避免残留 tab=prefetch 等把切页又重定向回 PyPI
+  router.replace({ path: '/platform', query: { module: id } })
+}
+
+watch(() => route.query.tab, syncModuleFromRoute)
+watch(() => route.query.module, syncModuleFromRoute)
+
+function markDirty() {
+  dirty.value = true
+}
 
 function normalizePlatforms(raw: unknown, legacy?: string): string[] {
   const allowed = new Set<string>(platformOptions.map((o) => o.id))
@@ -112,96 +183,46 @@ function normalizePlatforms(raw: unknown, legacy?: string): string[] {
 }
 
 function togglePlatform(id: string) {
-  const i = form.target_platforms.indexOf(id)
+  const i = prefetchForm.target_platforms.indexOf(id)
   if (i >= 0) {
-    if (form.target_platforms.length <= 1) return
-    form.target_platforms.splice(i, 1)
+    if (prefetchForm.target_platforms.length <= 1) return
+    prefetchForm.target_platforms.splice(i, 1)
   } else {
-    form.target_platforms.push(id)
+    prefetchForm.target_platforms.push(id)
   }
   markDirty()
 }
 
-function leavePrefetchIfHidden() {
-  if (!currentDesc.value.showPrefetchTab && tab.value === 'prefetch') {
-    tab.value = 'access'
-  }
-}
-
-function syncTabFromRoute() {
-  const q = String(route.query.tab || '')
-  if (q === 'rate') {
-    tab.value = 'download'
-  } else if (q === 'access' || q === 'download' || q === 'prefetch' || q === 'cache') {
-    tab.value = q
-  }
-  const mod = String(route.query.module || '')
-  if (isKnownModule(mod) && mod !== moduleId.value) {
-    snapshotCurrentPlatform()
-    moduleId.value = mod
-    applyPlatformDraft(moduleId.value)
-    leavePrefetchIfHidden()
-  }
-}
-
-function setTab(id: typeof tab.value) {
-  tab.value = id
-  router.replace({ query: { ...route.query, tab: id, module: moduleId.value } })
-}
-
-function snapshotCurrentPlatform() {
-  platformDrafts[moduleId.value] = {
-    enabled: form.enabled,
-    upstream: form.upstream,
-    file_upstream: form.file_upstream,
-    metadata_upstream: form.metadata_upstream,
-    upstream_token: form.upstream_token,
-    concurrency: form.concurrency,
-    chunk_size: form.chunk_size,
-    min_size: form.min_size,
-  }
-}
-
-function applyPlatformDraft(id: string) {
-  const d = platformDrafts[id]
-  if (!d) return
-  form.enabled = d.enabled
-  form.upstream = d.upstream
-  form.file_upstream = d.file_upstream
-  form.metadata_upstream = d.metadata_upstream
-  form.upstream_token = d.upstream_token || ''
-  form.concurrency = d.concurrency
-  form.chunk_size = d.chunk_size
-  form.min_size = d.min_size
-}
-
-function setModule(id: string) {
-  if (id === moduleId.value || !isKnownModule(id)) return
-  snapshotCurrentPlatform()
-  moduleId.value = id
-  applyPlatformDraft(id)
-  leavePrefetchIfHidden()
-  router.replace({ query: { ...route.query, module: id, tab: tab.value } })
-}
-
-watch(() => route.query.tab, syncTabFromRoute)
-watch(() => route.query.module, syncTabFromRoute)
-
-function markDirty() {
-  dirty.value = true
-}
-
-function draftFromConfig(cfg: PlatformConfig | undefined, defaults: (typeof MODULES)[0]['defaults'], persistToken: boolean): PlatformDraft {
+function draftFromConfig(
+  cfg: PlatformConfig | undefined,
+  defaults: (typeof MODULES)[0]['defaults'],
+  persistToken: boolean,
+): PlatformDraft {
   return {
     enabled: !!cfg?.enabled,
     upstream: cfg?.upstream || defaults.upstream,
     file_upstream: cfg?.file_upstream || cfg?.upstream || defaults.file_upstream,
     metadata_upstream: cfg?.metadata_upstream || defaults.metadata_upstream || '',
     upstream_token: persistToken ? cfg?.upstream_token || '' : '',
-    concurrency: cfg?.download?.concurrency ?? 16,
-    chunk_size: cfg?.download?.chunk_size ?? 5242880,
-    min_size: cfg?.download?.min_size ?? 102400,
   }
+}
+
+function applyPrefetchFromConfig(sch: AppConfig['scheduler'] | undefined) {
+  const pf = sch?.prefetch
+  prefetchForm.artifact_mode = pf?.artifact_mode || 'portable'
+  prefetchForm.extra_wheel_tags = (pf?.extra_wheel_tags || []).join('\n')
+  const tp = pf?.target_python
+  prefetchForm.target_python = Array.isArray(tp) ? tp.join('\n') : tp || '3.10\n3.11\n3.12'
+  prefetchForm.target_platforms = normalizePlatforms(pf?.target_platforms, pf?.target_platform)
+  prefetchForm.max_depth = pf?.max_depth ?? 5
+  prefetchForm.max_packages = pf?.max_packages ?? 200
+}
+
+function linesToList(raw: string): string[] {
+  return raw
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
 }
 
 async function load() {
@@ -218,26 +239,7 @@ async function load() {
       )
     }
     applyPlatformDraft(moduleId.value)
-
-    if (cfg.cache) {
-      form.index_ttl_seconds = cfg.cache.index_ttl_seconds
-      form.package_ttl_seconds = cfg.cache.package_ttl_seconds
-      form.max_size_gb = cfg.cache.max_size_gb ?? 100
-    }
-    const sch = cfg.scheduler
-    if (sch) {
-      form.idle_quota_ratio = sch.prefetch?.idle_quota_ratio ?? 0.3
-      form.on_interactive = sch.prefetch?.on_interactive || 'pause'
-      form.resume_on_idle = sch.prefetch?.resume_on_idle !== false
-      form.artifact_mode = sch.prefetch?.artifact_mode || 'portable'
-      form.extra_wheel_tags = (sch.prefetch?.extra_wheel_tags || []).join('\n')
-      const tp = sch.prefetch?.target_python
-      form.target_python = Array.isArray(tp) ? tp.join('\n') : tp || '3.10\n3.11\n3.12'
-      form.target_platforms = normalizePlatforms(sch.prefetch?.target_platforms, sch.prefetch?.target_platform)
-      form.max_packages = sch.prefetch?.max_packages ?? 200
-      form.small_file_boost_enabled = sch.small_file_boost?.enabled !== false
-      form.small_file_boost_kb = sch.small_file_boost?.max_size_kb ?? 512
-    }
+    applyPrefetchFromConfig(cfg.scheduler)
     dirty.value = false
   } catch (e: any) {
     toast.err(e.message || t('platform.loadFailed'))
@@ -251,18 +253,24 @@ async function save() {
   try {
     snapshotCurrentPlatform()
     const platforms: Record<string, PlatformConfig> = {}
+    const cfg = await api.getConfig()
     for (const desc of MODULES) {
       const d = platformDrafts[desc.id]
       if (!d) continue
+      const prev = cfg.platforms?.[desc.id]
       const row: PlatformConfig = {
         enabled: d.enabled,
         upstream: d.upstream,
-        file_upstream: d.file_upstream,
-        metadata_upstream: d.metadata_upstream,
-        download: {
-          concurrency: d.concurrency,
-          chunk_size: d.chunk_size,
-          min_size: d.min_size,
+        file_upstream: desc.fields.unifiedUpstream ? d.upstream : d.file_upstream,
+        // 统一上游且无第三字段时，metadata 与 upstream 同步（Go SumDB 等走同一源；空串亦由后端回退）
+        metadata_upstream:
+          desc.fields.unifiedUpstream && desc.fields.thirdField === 'none'
+            ? d.upstream
+            : d.metadata_upstream,
+        download: prev?.download || {
+          concurrency: 16,
+          chunk_size: 5242880,
+          min_size: 102400,
         },
       }
       if (desc.fields.persistUpstreamToken) {
@@ -270,37 +278,33 @@ async function save() {
       }
       platforms[desc.id] = row
     }
-    await api.putConfig({
-      cache: {
-        max_size_gb: form.max_size_gb,
-        index_ttl_seconds: form.index_ttl_seconds,
-        package_ttl_seconds: form.package_ttl_seconds,
+
+    const prevSch = cfg.scheduler
+    const prevPf = prevSch?.prefetch
+    const platformsPayload = platforms
+    const schedulerPayload = {
+      prefetch: {
+        idle_quota_ratio: prevPf?.idle_quota_ratio ?? 0.3,
+        on_interactive: prevPf?.on_interactive || 'pause',
+        resume_on_idle: prevPf?.resume_on_idle !== false,
+        artifact_mode: prefetchForm.artifact_mode,
+        extra_wheel_tags: linesToList(prefetchForm.extra_wheel_tags),
+        target_python: linesToList(prefetchForm.target_python),
+        target_platforms: prefetchForm.target_platforms.length
+          ? [...prefetchForm.target_platforms]
+          : ['linux'],
+        target_platform: prefetchForm.target_platforms[0] || 'linux',
+        max_depth: prefetchForm.max_depth,
+        max_packages: prefetchForm.max_packages,
       },
-      scheduler: {
-        prefetch: {
-          idle_quota_ratio: form.idle_quota_ratio,
-          on_interactive: form.on_interactive,
-          resume_on_idle: form.resume_on_idle,
-          artifact_mode: form.artifact_mode,
-          extra_wheel_tags: form.extra_wheel_tags
-            .split(/[\n,]+/)
-            .map((s) => s.trim())
-            .filter(Boolean),
-          target_python: form.target_python
-            .split(/[\n,]+/)
-            .map((s) => s.trim())
-            .filter(Boolean),
-          target_platforms: form.target_platforms.length ? [...form.target_platforms] : ['linux'],
-          target_platform: form.target_platforms[0] || 'linux',
-          max_packages: form.max_packages,
-        },
-        small_file_boost: {
-          enabled: form.small_file_boost_enabled,
-          max_size_kb: form.small_file_boost_kb,
-        },
+      small_file_boost: prevSch?.small_file_boost || {
+        enabled: true,
+        max_size_kb: 512,
       },
-      platforms,
-    })
+    }
+
+    await api.putConfig({ platforms: platformsPayload, scheduler: schedulerPayload })
+    await modulesStore.refresh()
     dirty.value = false
     toast.ok(t('platform.saved'))
   } catch (e: any) {
@@ -310,33 +314,108 @@ async function save() {
   }
 }
 
-async function clearCache() {
-  clearing.value = true
-  try {
-    await api.clearCache()
-    toast.ok(t('cache.cleared'))
-  } catch (e: any) {
-    toast.err(e.message || t('cache.clearFailed'))
-  } finally {
-    clearing.value = false
-    showClearModal.value = false
+function moduleLabel(id: string) {
+  const desc = MODULE_BY_ID[id]
+  return desc ? t(desc.labelKey) : id
+}
+
+function collectEnabledPlatformDrafts() {
+  snapshotCurrentPlatform()
+  const platforms: Record<
+    string,
+    { enabled: boolean; upstream: string; file_upstream: string; metadata_upstream: string }
+  > = {}
+  for (const desc of MODULES) {
+    const d = platformDrafts[desc.id]
+    if (!d?.enabled) continue
+    platforms[desc.id] = {
+      enabled: true,
+      upstream: d.upstream,
+      file_upstream: desc.fields.unifiedUpstream ? d.upstream : d.file_upstream,
+      metadata_upstream:
+        desc.fields.unifiedUpstream && desc.fields.thirdField === 'none'
+          ? d.upstream
+          : d.metadata_upstream,
+    }
   }
+  return platforms
 }
 
 async function testAccess() {
+  const platforms = collectEnabledPlatformDrafts()
+  const ids = Object.keys(platforms)
+  if (!ids.length) {
+    toast.err(t('platform.testNoEnabled'))
+    return
+  }
+
   testing.value = true
-  testChecks.value = null
+  testPhase.value = 'running'
+  // 先列出将测模块，避免长时间空白
+  testModules.value = ids.map((id) => ({
+    id,
+    ok: false,
+    checks: [
+      {
+        name: 'pending',
+        ok: false,
+        skipped: true,
+        detail: t('platform.testPending'),
+        ms: 0,
+      },
+    ],
+  }))
+  testModalVisible.value = true
+
   try {
     const res = await api.testAccess({
-      upstream_proxy: systemNet.upstream_proxy,
-      upstream: form.upstream,
-      file_upstream: form.file_upstream,
-      metadata_upstream: form.metadata_upstream,
+      upstream_proxy: systemNet.upstream_proxy || undefined,
+      platforms,
     })
-    testChecks.value = res.checks || []
+    const got = res.modules?.length
+      ? res.modules
+      : res.checks?.length
+        ? [{ id: ids[0] || 'unknown', ok: !!res.ok, checks: res.checks }]
+        : []
+    // 按发起顺序合并，未返回的模块标为无结果
+    const byId = new Map(got.map((m) => [m.id, m]))
+    testModules.value = ids.map((id) => {
+      const m = byId.get(id)
+      if (m) return m
+      return {
+        id,
+        ok: false,
+        checks: [
+          {
+            name: 'upstream',
+            ok: false,
+            detail: t('platform.testNoResult'),
+            ms: 0,
+          },
+        ],
+      }
+    })
+    // 后端额外返回但前端未发起的（极少），追加展示
+    for (const m of got) {
+      if (!ids.includes(m.id)) testModules.value.push(m)
+    }
+    testPhase.value = 'done'
     if (res.ok) toast.ok(t('platform.testOk'))
     else toast.err(t('platform.testFailed'))
   } catch (e: any) {
+    testModules.value = ids.map((id) => ({
+      id,
+      ok: false,
+      checks: [
+        {
+          name: 'upstream',
+          ok: false,
+          detail: e.message || t('platform.testFailed'),
+          ms: 0,
+        },
+      ],
+    }))
+    testPhase.value = 'done'
     toast.err(e.message || t('platform.testFailed'))
   } finally {
     testing.value = false
@@ -344,7 +423,12 @@ async function testAccess() {
 }
 
 function checkLabel(name: string) {
+  if (name === 'pending') return t('platform.testPending')
   const map: Record<string, string> = {
+    upstream: t('platform.sectionUpstream'),
+    download: t('platform.testDownload'),
+    metadata: t('platform.testMetadata'),
+    manifest: t('platform.testManifest'),
     index_upstream: t('platform.indexUpstream'),
     file_upstream: t('platform.fileUpstream'),
     metadata_upstream: t('platform.metadataUpstream'),
@@ -354,7 +438,8 @@ function checkLabel(name: string) {
 }
 
 onMounted(() => {
-  syncTabFromRoute()
+  redirectLegacyTabs()
+  syncModuleFromRoute()
   load()
 })
 </script>
@@ -364,6 +449,15 @@ onMounted(() => {
     <PageHeader :title="t('platform.title')" :description="t('platform.subtitle')">
       <template #actions>
         <span v-if="dirty" class="ui-badge-warn">{{ t('common.unsaved') }}</span>
+        <RouterLink v-if="moduleCacheTo" class="ui-btn" :to="moduleCacheTo">
+          {{ t(currentDesc.nav.catalogLabelKey) }}
+        </RouterLink>
+        <RouterLink v-if="modulePrefetchTo" class="ui-btn" :to="modulePrefetchTo">
+          {{ t('nav.prefetch') }}
+        </RouterLink>
+        <button class="ui-btn" :disabled="loading || saving || testing" @click="testAccess">
+          {{ testing ? t('platform.testing') : t('platform.testAccess') }}
+        </button>
         <button class="ui-btn" :disabled="loading || saving" @click="load">{{ t('platform.reload') }}</button>
         <button class="ui-btn-primary" :disabled="loading || saving" @click="save">
           {{ saving ? t('platform.saving') : t('common.save') }}
@@ -384,21 +478,8 @@ onMounted(() => {
       </button>
     </div>
 
-    <div class="mb-4 flex flex-wrap gap-1 rounded-xl border border-line bg-panel/60 p-1">
-      <button
-        v-for="item in tabs"
-        :key="item.id"
-        type="button"
-        class="ui-tab"
-        :class="{ 'ui-tab-active': tab === item.id }"
-        @click="setTab(item.id)"
-      >
-        {{ item.label }}
-      </button>
-    </div>
-
     <div class="space-y-4" @input="markDirty" @change="markDirty">
-      <section v-show="tab === 'access'" class="ui-panel p-5">
+      <section :key="moduleId" class="ui-panel p-5">
         <div class="mb-5">
           <label class="flex items-center gap-3 text-sm font-medium text-fg">
             <span class="ui-switch">
@@ -414,12 +495,18 @@ onMounted(() => {
         <p v-if="currentDesc.hints.upstreamHintKey" class="mb-3 text-xs text-muted">
           {{ t(currentDesc.hints.upstreamHintKey) }}
         </p>
+        <p
+          v-if="!showPrefetchSection && currentDesc.hints.prefetchHintKey"
+          class="mb-3 text-xs text-muted"
+        >
+          {{ t(currentDesc.hints.prefetchHintKey) }}
+        </p>
         <div class="grid gap-4 sm:grid-cols-2">
-          <div>
+          <div :class="unifiedUpstream ? 'sm:col-span-2' : ''">
             <label class="ui-label">{{ t(currentDesc.labels.upstreamKey) }}</label>
             <input v-model="form.upstream" class="ui-input" />
           </div>
-          <div>
+          <div v-if="!unifiedUpstream">
             <label class="ui-label">{{ t(currentDesc.labels.fileUpstreamKey) }}</label>
             <input v-model="form.file_upstream" class="ui-input" />
           </div>
@@ -446,7 +533,7 @@ onMounted(() => {
             />
           </div>
 
-          <div v-else-if="thirdField === 'auth' || thirdField === 'sumdb'" class="sm:col-span-2">
+          <div v-if="thirdField === 'auth' || thirdField === 'sumdb'" class="sm:col-span-2">
             <label class="ui-label">{{ t(currentDesc.labels.thirdFieldKey || '') }}</label>
             <input
               v-model="form.metadata_upstream"
@@ -458,7 +545,7 @@ onMounted(() => {
             </p>
           </div>
 
-          <div v-else-if="thirdField === 'token'" class="sm:col-span-2">
+          <div v-if="thirdField === 'token'" class="sm:col-span-2">
             <label class="ui-label">{{ t(currentDesc.labels.thirdFieldKey || 'platform.upstreamToken') }}</label>
             <input
               v-model="form.upstream_token"
@@ -473,82 +560,20 @@ onMounted(() => {
           </div>
         </div>
 
-        <div
-          v-if="currentDesc.fields.showAccessTest"
-          class="mt-5 flex flex-wrap items-center gap-3 border-t border-line pt-4"
-        >
-          <button type="button" class="ui-btn" :disabled="loading || testing" @click.stop="testAccess">
-            {{ testing ? t('platform.testing') : t('platform.testAccess') }}
-          </button>
-        </div>
-
-        <ul v-if="currentDesc.fields.showAccessTest && testChecks?.length" class="mt-4 space-y-2">
-          <li v-for="(c, i) in testChecks" :key="i" class="rounded-lg border border-line px-3 py-2 text-sm">
-            <div class="flex flex-wrap items-center gap-2">
-              <span
-                class="inline-block h-2 w-2 rounded-full"
-                :class="c.skipped ? 'bg-muted' : c.ok ? 'bg-ok' : 'bg-danger'"
-              />
-              <span class="font-medium text-fg">{{ checkLabel(c.name) }}</span>
-              <span v-if="c.skipped" class="text-xs text-muted">{{ t('platform.testSkipped') }}</span>
-              <span v-else-if="c.ok" class="text-xs text-ok">{{ t('platform.testPass') }}</span>
-              <span v-else class="text-xs text-danger">{{ t('platform.testFail') }}</span>
-              <span v-if="c.ms" class="ml-auto font-mono text-xs text-muted">{{ c.ms }}ms</span>
-            </div>
-            <p class="mt-1 break-all font-mono text-xs text-muted">{{ c.detail }}</p>
-          </li>
-        </ul>
       </section>
 
-      <section v-show="tab === 'download'" class="ui-panel space-y-6 p-5">
+      <section v-if="showPrefetchSection" class="ui-panel space-y-5 p-5">
         <div>
-          <h3 class="ui-section-title">{{ t('platform.sectionDownload') }}</h3>
-          <div class="grid gap-4 sm:grid-cols-3">
-            <div>
-              <label class="ui-label">{{ t('platform.chunkConcurrency') }}</label>
-              <input v-model.number="form.concurrency" type="number" min="1" class="ui-input" />
-            </div>
-            <div>
-              <label class="ui-label">{{ t('platform.chunkSize') }}</label>
-              <input v-model.number="form.chunk_size" type="number" min="1" class="ui-input" />
-            </div>
-            <div>
-              <label class="ui-label">{{ t('platform.parallelMinSize') }}</label>
-              <input v-model.number="form.min_size" type="number" min="0" class="ui-input" />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section v-show="tab === 'prefetch'" class="ui-panel p-5">
-        <p v-if="prefetchUI === 'hint' && currentDesc.hints.prefetchHintKey" class="text-sm text-muted">
-          {{ t(currentDesc.hints.prefetchHintKey) }}
-        </p>
-        <template v-else-if="prefetchUI === 'arch'">
-          <p v-if="currentDesc.hints.prefetchHintKey" class="mb-4 text-sm text-muted">
+          <h3 class="ui-section-title">{{ t('platform.sectionPrefetch') }}</h3>
+          <p v-if="currentDesc.hints.prefetchHintKey" class="text-xs text-muted">
             {{ t(currentDesc.hints.prefetchHintKey) }}
           </p>
-          <div class="sm:col-span-3">
-            <label class="ui-label">{{ t('platform.targetPlatform') }}</label>
-            <p class="mb-2 text-xs text-muted">{{ t('platform.dockerArchHint') }}</p>
-            <div class="flex flex-wrap gap-2">
-              <button
-                v-for="opt in platformOptions"
-                :key="opt.id"
-                type="button"
-                class="ui-chip"
-                :class="{ 'ui-chip-active': form.target_platforms.includes(opt.id) }"
-                @click="togglePlatform(opt.id)"
-              >
-                {{ t(opt.labelKey) }}
-              </button>
-            </div>
-          </div>
-        </template>
-        <div v-else-if="prefetchUI === 'pypiWheel'" class="grid gap-4 sm:grid-cols-3">
+        </div>
+
+        <div v-if="prefetchUI === 'pypiWheel'" class="grid gap-4 sm:grid-cols-3">
           <div>
             <label class="ui-label">{{ t('platform.artifactMode') }}</label>
-            <select v-model="form.artifact_mode" class="ui-input">
+            <select v-model="prefetchForm.artifact_mode" class="ui-input">
               <option value="portable">portable</option>
               <option value="all">all</option>
             </select>
@@ -556,7 +581,7 @@ onMounted(() => {
           <div class="sm:col-span-2">
             <label class="ui-label">{{ t('platform.minPython') }}</label>
             <textarea
-              v-model="form.target_python"
+              v-model="prefetchForm.target_python"
               rows="2"
               class="ui-input font-mono text-sm"
               placeholder="3.10&#10;3.11&#10;3.12"
@@ -571,7 +596,7 @@ onMounted(() => {
                 :key="opt.id"
                 type="button"
                 class="ui-chip"
-                :class="{ 'ui-chip-active': form.target_platforms.includes(opt.id) }"
+                :class="{ 'ui-chip-active': prefetchForm.target_platforms.includes(opt.id) }"
                 @click="togglePlatform(opt.id)"
               >
                 {{ t(opt.labelKey) }}
@@ -580,54 +605,133 @@ onMounted(() => {
           </div>
           <div>
             <label class="ui-label">{{ t('platform.maxPackages') }}</label>
-            <input v-model.number="form.max_packages" type="number" min="1" max="2000" class="ui-input" />
+            <input
+              v-model.number="prefetchForm.max_packages"
+              type="number"
+              min="1"
+              max="2000"
+              class="ui-input"
+            />
           </div>
           <div class="sm:col-span-3">
             <label class="ui-label">{{ t('platform.extraWheelTags') }}</label>
             <textarea
-              v-model="form.extra_wheel_tags"
+              v-model="prefetchForm.extra_wheel_tags"
               rows="2"
               class="ui-input font-mono text-sm"
               placeholder="manylinux2014_x86_64"
             />
           </div>
         </div>
-      </section>
 
-      <section v-show="tab === 'cache'" class="ui-panel p-5">
-        <div class="grid gap-4 sm:grid-cols-3">
+        <div v-else-if="prefetchUI === 'arch'" class="space-y-3">
           <div>
-            <label class="ui-label">{{ t('platform.cacheGB') }}</label>
-            <input v-model.number="form.max_size_gb" type="number" min="1" class="ui-input" />
-          </div>
-          <div>
-            <label class="ui-label">{{ t('platform.indexTTL') }}</label>
-            <input v-model.number="form.index_ttl_seconds" type="number" min="1" class="ui-input" />
-            <p class="mt-1 text-xs text-muted">{{ t('platform.indexTTLHint') }}</p>
-          </div>
-          <div>
-            <label class="ui-label">{{ t('platform.packageTTL') }}</label>
-            <input v-model.number="form.package_ttl_seconds" type="number" min="0" class="ui-input" />
-            <p class="mt-1 text-xs text-muted">{{ t('platform.packageTTLHint') }}</p>
+            <label class="ui-label">{{ t('platform.targetPlatform') }}</label>
+            <p class="mb-2 text-xs text-muted">{{ t('platform.dockerArchHint') }}</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="opt in platformOptions"
+                :key="opt.id"
+                type="button"
+                class="ui-chip"
+                :class="{ 'ui-chip-active': prefetchForm.target_platforms.includes(opt.id) }"
+                @click="togglePlatform(opt.id)"
+              >
+                {{ t(opt.labelKey) }}
+              </button>
+            </div>
           </div>
         </div>
-        <div class="mt-6 border-t border-danger/20 pt-5">
-          <h3 class="mb-2 text-sm font-medium text-danger">{{ t('platform.dangerZone') }}</h3>
-          <p class="mb-4 text-xs text-muted">{{ t('platform.clearCacheDesc') }}</p>
-          <button class="ui-btn-danger" :disabled="clearing" @click="showClearModal = true">
-            {{ t('platform.clearCache') }}
-          </button>
+
+        <div v-else-if="moduleId === 'maven'" class="grid gap-4 sm:grid-cols-3">
+          <div>
+            <label class="ui-label">{{ t('platform.maxPackages') }}</label>
+            <input
+              v-model.number="prefetchForm.max_packages"
+              type="number"
+              min="1"
+              max="2000"
+              class="ui-input"
+            />
+            <p class="mt-1 text-xs text-muted">{{ t('platform.mavenMaxPackagesHint') }}</p>
+          </div>
         </div>
       </section>
     </div>
 
     <ModalDialog
-      v-model:visible="showClearModal"
-      :title="t('platform.clearCache')"
-      :description="t('platform.clearCacheConfirm')"
-      danger
-      @cancel="showClearModal = false"
-      @confirm="clearCache"
-    />
+      v-model:visible="testModalVisible"
+      :title="t('platform.testAccess')"
+      :description="
+        testPhase === 'running'
+          ? t('platform.testRunningDesc', { n: testModules?.length || 0 })
+          : t('platform.testAccessDesc', { n: testModules?.length || 0 })
+      "
+      hide-confirm
+      wide
+    >
+      <div v-if="!testModules?.length" class="py-6 text-center text-sm text-muted">
+        {{ t('platform.testEmpty') }}
+      </div>
+      <div v-else class="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+        <section
+          v-for="m in testModules"
+          :key="m.id"
+          class="rounded-lg border border-line px-3 py-3"
+        >
+          <div class="mb-2 flex flex-wrap items-center gap-2">
+            <span
+              class="inline-block h-2.5 w-2.5 rounded-full"
+              :class="
+                testPhase === 'running' && m.checks.some((c) => c.name === 'pending')
+                  ? 'animate-pulse bg-warn'
+                  : m.ok
+                    ? 'bg-ok'
+                    : 'bg-danger'
+              "
+            />
+            <span class="font-medium text-fg">{{ moduleLabel(m.id) }}</span>
+            <span class="font-mono text-xs text-muted">{{ m.id }}</span>
+            <span
+              v-if="testPhase === 'running' && m.checks.some((c) => c.name === 'pending')"
+              class="text-xs text-muted"
+            >
+              {{ t('platform.testing') }}
+            </span>
+            <span v-else-if="m.ok" class="text-xs text-ok">{{ t('platform.testPass') }}</span>
+            <span v-else class="text-xs text-danger">{{ t('platform.testFail') }}</span>
+          </div>
+          <ul class="space-y-2">
+            <li
+              v-for="(c, i) in m.checks"
+              :key="i"
+              class="rounded-md bg-panel/50 px-2.5 py-2 text-sm"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <span
+                  class="inline-block h-2 w-2 rounded-full"
+                  :class="
+                    c.skipped || c.name === 'pending'
+                      ? 'bg-muted'
+                      : c.ok
+                        ? 'bg-ok'
+                        : 'bg-danger'
+                  "
+                />
+                <span class="font-medium text-fg">{{ checkLabel(c.name) }}</span>
+                <span
+                  v-if="c.skipped || c.name === 'pending'"
+                  class="text-xs text-muted"
+                >{{ t('platform.testSkipped') }}</span>
+                <span v-else-if="c.ok" class="text-xs text-ok">{{ t('platform.testPass') }}</span>
+                <span v-else class="text-xs text-danger">{{ t('platform.testFail') }}</span>
+                <span v-if="c.ms" class="ml-auto font-mono text-xs text-muted">{{ c.ms }}ms</span>
+              </div>
+              <p class="mt-1 break-all font-mono text-xs text-muted">{{ c.detail }}</p>
+            </li>
+          </ul>
+        </section>
+      </div>
+    </ModalDialog>
   </div>
 </template>

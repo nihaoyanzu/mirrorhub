@@ -21,12 +21,6 @@ const snippets = computed<GuideSnippet[]>(() => [
     title: t('guide.huggingfaceEnv'),
     text: `export HF_ENDPOINT=${props.baseURL}\nexport HF_HUB_DISABLE_XET=1`,
   },
-  {
-    key: 'huggingfaceNote',
-    title: t('guide.huggingfaceNote'),
-    text: t('guide.huggingfaceNoteBody'),
-    hideCopy: true,
-  },
 ])
 </script>
 

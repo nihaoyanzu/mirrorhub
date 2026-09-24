@@ -18,30 +18,40 @@ const npmToolTab = ref<'npm' | 'pnpm' | 'yarn'>('npm')
 
 const npmSnippets = computed<GuideSnippet[]>(() => [
   {
-    key: 'npmOnce',
-    title: t('guide.npmOnce'),
+    key: 'npmGlobal',
+    title: t('guide.npmGlobal'),
     text: `npm config set registry ${props.registryURL}`,
   },
   {
-    key: 'npmConfig',
-    title: t('guide.npmConfig'),
-    text: `# .npmrc\nregistry=${props.registryURL}`,
+    key: 'npmLocal',
+    title: t('guide.npmLocal'),
+    text: `# 项目 .npmrc\nregistry=${props.registryURL}`,
   },
 ])
 
 const pnpmSnippets = computed<GuideSnippet[]>(() => [
   {
-    key: 'pnpmConfig',
-    title: t('guide.pnpmConfig'),
+    key: 'pnpmGlobal',
+    title: t('guide.pnpmGlobal'),
     text: `pnpm config set registry ${props.registryURL}`,
+  },
+  {
+    key: 'pnpmLocal',
+    title: t('guide.pnpmLocal'),
+    text: `# 当前终端（Corepack 拉 pnpm 时需要）\nexport COREPACK_NPM_REGISTRY=${props.registryURL}\n\n# 项目 .npmrc\nregistry=${props.registryURL}`,
   },
 ])
 
 const yarnSnippets = computed<GuideSnippet[]>(() => [
   {
-    key: 'yarnConfig',
-    title: t('guide.yarnConfig'),
+    key: 'yarnGlobal',
+    title: t('guide.yarnGlobal'),
     text: `yarn config set registry ${props.registryURL}`,
+  },
+  {
+    key: 'yarnLocal',
+    title: t('guide.yarnLocal'),
+    text: `# 当前终端（Corepack 拉 Yarn 时需要）\nexport COREPACK_NPM_REGISTRY=${props.registryURL}\n\n# 项目 .npmrc 或 .yarnrc\nregistry=${props.registryURL}`,
   },
 ])
 

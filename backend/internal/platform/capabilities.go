@@ -97,3 +97,24 @@ type TextDetector interface {
 	LookLikePrefetchText(text string) bool
 	ParsePrefetchText(text string) (TextDetectResult, bool)
 }
+
+// AccessProbeCheck 单条上游探测结果。
+type AccessProbeCheck struct {
+	Name    string `json:"name"`
+	OK      bool   `json:"ok"`
+	Skipped bool   `json:"skipped,omitempty"`
+	Detail  string `json:"detail"`
+	MS      int64  `json:"ms"`
+}
+
+// AccessProbeEnv 管理面连通性探测上下文（Client 已含出站代理）。
+type AccessProbeEnv struct {
+	Ctx    context.Context
+	Client *http.Client
+	Cfg    config.PlatformConfig
+}
+
+// AccessProber 各平台自描述上游探测；api 层按 Register 顺序调用，勿按平台名分支。
+type AccessProber interface {
+	ProbeAccess(env AccessProbeEnv) []AccessProbeCheck
+}

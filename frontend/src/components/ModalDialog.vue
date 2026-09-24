@@ -10,6 +10,9 @@ defineProps<{
   confirmText?: string
   cancelText?: string
   danger?: boolean
+  /** 仅关闭按钮（结果展示等） */
+  hideConfirm?: boolean
+  wide?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,7 +27,6 @@ function onCancel() {
 }
 
 function onConfirm() {
-  // 先关弹窗，避免异步操作完成前一直挡在界面上
   emit('update:visible', false)
   emit('confirm')
 }
@@ -38,19 +40,21 @@ function onConfirm() {
         class="fixed inset-0 z-[100] flex items-center justify-center p-4"
         @keydown.escape="onCancel"
       >
-        <!-- 遮罩 -->
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="onCancel" />
 
-        <!-- 对话框 -->
-        <div class="ui-panel relative w-full max-w-md p-6 shadow-2xl">
+        <div
+          class="ui-panel relative w-full p-6 shadow-2xl"
+          :class="wide ? 'max-w-xl' : 'max-w-md'"
+        >
           <h3 v-if="title" class="mb-2 text-lg font-semibold text-fg">{{ title }}</h3>
-          <p v-if="description" class="mb-6 text-sm text-muted">{{ description }}</p>
+          <p v-if="description" class="mb-4 text-sm text-muted">{{ description }}</p>
           <slot />
           <div class="mt-6 flex justify-end gap-3">
             <button class="ui-btn" @click="onCancel">
-              {{ cancelText || t('common.cancel') }}
+              {{ cancelText || (hideConfirm ? t('common.close') : t('common.cancel')) }}
             </button>
             <button
+              v-if="!hideConfirm"
               :class="danger ? 'ui-btn-danger' : 'ui-btn-primary'"
               @click="onConfirm"
             >

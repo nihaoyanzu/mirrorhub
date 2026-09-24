@@ -152,9 +152,9 @@ onMounted(async () => {
           <component
             :is="activeSection"
             v-if="activeSection"
-            :base-url="baseURL"
-            :index-url="indexURL"
-            :registry-url="registryURL"
+            :baseURL="baseURL"
+            :indexURL="indexURL"
+            :registryURL="registryURL"
             :display-host="displayHost"
             :trusted-host="trustedHost"
             :copied="copied"

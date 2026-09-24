@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
@@ -9,9 +10,12 @@ import { api } from '@/api/client'
 import { usePagination } from '@/composables/usePagination'
 import { fmtBytes, fmtTime } from '@/lib/format'
 import { useToastStore } from '@/stores/toast'
+import { isKnownModule, MODULE_BY_ID, MODULES } from '@/modules/registry'
 import type { PackageSummary, PackageDetail } from '@/types/api'
 
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
 const toast = useToastStore()
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -32,9 +36,48 @@ const showUpstream = ref(true)
 
 let catalogPoll: number | undefined
 
+const moduleId = computed(() => {
+  const raw = route.query.module
+  const mod = String(Array.isArray(raw) ? raw[0] : raw || '')
+  if (isKnownModule(mod) && MODULE_BY_ID[mod]?.nav.catalog) return mod
+  return MODULES.find((d) => d.nav.catalog)?.id || 'pypi'
+})
+
+const currentDesc = computed(() => MODULE_BY_ID[moduleId.value] || MODULES[0])
+const isLocalMode = computed(() => currentDesc.value.catalogMode === 'local')
+const canPrefetchVersion = computed(() => {
+  // npm 预取靠 lockfile，版本芯片不触发预取
+  if (moduleId.value === 'npm') return false
+  return currentDesc.value.nav.prefetch
+})
+
+const showVersions = computed(() => {
+  if (!isLocalMode.value) return true
+  return (detail.value?.versions || []).length > 0 || canPrefetchVersion.value
+})
+
+const prefetchTo = computed(() =>
+  currentDesc.value.nav.prefetch ? `/prefetch?module=${moduleId.value}` : '',
+)
+const pageTitle = computed(() => {
+  const mod = t(currentDesc.value.labelKey)
+  const page = isLocalMode.value ? t(currentDesc.value.nav.catalogLabelKey) : t('packages.title')
+  return `${mod} · ${page}`
+})
+const pageSubtitle = computed(() =>
+  isLocalMode.value ? t('packages.localSubtitle') : t('packages.subtitle'),
+)
+const searchPlaceholder = computed(() =>
+  isLocalMode.value ? t('packages.localPlaceholder') : t('packages.placeholder'),
+)
+
 const listPageCount = computed(() => Math.max(1, Math.ceil(matchTotal.value / listSize.value) || 1))
 
 const catalogHint = computed(() => {
+  if (isLocalMode.value) {
+    if (matchTotal.value > 0) return t('packages.packagesCount', { n: matchTotal.value })
+    return ''
+  }
   if (catalogRefreshing.value && catalogSize.value > 0) {
     return t('packages.updating') + ` ${catalogSize.value}`
   }
@@ -45,6 +88,12 @@ const catalogHint = computed(() => {
 })
 
 const filteredHint = computed(() => {
+  if (isLocalMode.value) {
+    if (q.value.trim() && matchTotal.value >= 0) {
+      return t('packages.matchCount', { n: matchTotal.value })
+    }
+    return catalogHint.value
+  }
   if (!q.value.trim()) return catalogHint.value
   if (matchTotal.value <= 0 && !packages.value.length) return catalogHint.value
   const match = t('packages.matchCount', { n: matchTotal.value })
@@ -53,6 +102,10 @@ const filteredHint = computed(() => {
 
 const emptyTitle = computed(() => {
   if (loading.value) return t('common.loading')
+  if (isLocalMode.value) {
+    if (q.value.trim()) return t('packages.noMatch')
+    return t('packages.localEmpty')
+  }
   if (!catalogReady.value && catalogRefreshing.value) return t('packages.indexPreparing')
   if (q.value.trim()) return t('packages.noMatch')
   return t('packages.inputName')
@@ -60,6 +113,10 @@ const emptyTitle = computed(() => {
 
 const emptyDesc = computed(() => {
   if (loading.value) return ''
+  if (isLocalMode.value) {
+    if (q.value.trim()) return ''
+    return t('packages.localEmptyHint')
+  }
   if (!catalogReady.value && catalogRefreshing.value) {
     return catalogSize.value > 0 ? t('packages.loadedCount', { n: catalogSize.value }) : t('packages.firstPull')
   }
@@ -82,8 +139,17 @@ function applyCatalogMeta(res: {
 
 function syncCatalogPoll() {
   window.clearInterval(catalogPoll)
+  if (isLocalMode.value) return
   if (catalogRefreshing.value || !catalogReady.value) {
     catalogPoll = window.setInterval(() => loadList(true), 2000)
+  }
+}
+
+function syncModuleFromRoute() {
+  const raw = route.query.module
+  const mod = String(Array.isArray(raw) ? raw[0] : raw || '')
+  if (!isKnownModule(mod) || !MODULE_BY_ID[mod]?.nav.catalog) {
+    router.replace({ path: '/packages', query: { module: moduleId.value } })
   }
 }
 
@@ -95,6 +161,7 @@ async function loadList(silent = false) {
       q: query || undefined,
       page: listPage.value,
       page_size: listSize.value,
+      platform: moduleId.value,
     })
     packages.value = res.packages || []
     matchTotal.value = res.total || 0
@@ -123,7 +190,7 @@ function goList(p: number) {
   loadList()
 }
 
-const files = computed(() => (detail.value?.files || []))
+const files = computed(() => detail.value?.files || [])
 const {
   page: filePage,
   size: fileSize,
@@ -137,7 +204,8 @@ const {
 const versions = computed(() => {
   const d = detail.value
   if (!d) return [] as string[]
-  return (d.upstream?.versions || d.index_versions || d.versions || [])
+  if (isLocalMode.value) return d.versions || []
+  return d.upstream?.versions || d.index_versions || d.versions || []
 })
 const {
   page: verPage,
@@ -155,7 +223,10 @@ async function openPackage(name: string) {
   resetFiles()
   resetVers()
   try {
-    detail.value = await api.getPackage(name, showUpstream.value)
+    detail.value = await api.getPackage(name, {
+      upstream: !isLocalMode.value && showUpstream.value,
+      platform: moduleId.value,
+    })
   } catch (e: any) {
     toast.err(e.message || t('packages.loadDetailFailed'))
     detail.value = null
@@ -183,9 +254,24 @@ async function confirmDelete() {
   }
 }
 
+function prefetchSpec(name: string, version: string): string {
+  switch (moduleId.value) {
+    case 'docker':
+      return version.startsWith('sha256:') ? `${name}@${version}` : `${name}:${version}`
+    case 'huggingface':
+      return version && version !== 'main' ? `${name}@${version}` : name
+    case 'goproxy':
+      return `${name}@${version}`
+    case 'maven':
+      return `${name}:${version}`
+    default:
+      return `${name}==${version}`
+  }
+}
+
 async function requestPrefetch(version: string) {
-  if (!selected.value || !version) return
-  const spec = `${selected.value}==${version}`
+  if (!selected.value || !version || !canPrefetchVersion.value) return
+  const spec = prefetchSpec(selected.value, version)
   try {
     await api.prefetch([spec])
     toast.ok(t('packages.submittedPrefetch', { name: spec }))
@@ -203,10 +289,21 @@ watch(q, () => {
   }, 280)
 })
 watch(showUpstream, () => {
-  if (selected.value) openPackage(selected.value)
+  if (selected.value && !isLocalMode.value) openPackage(selected.value)
 })
+watch(moduleId, () => {
+  q.value = ''
+  selected.value = ''
+  detail.value = null
+  listPage.value = 1
+  loadList()
+})
+watch(() => route.query.module, syncModuleFromRoute)
 
-onMounted(() => loadList())
+onMounted(() => {
+  syncModuleFromRoute()
+  loadList()
+})
 onUnmounted(() => {
   window.clearTimeout(searchTimer)
   window.clearInterval(catalogPoll)
@@ -215,9 +312,11 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <PageHeader :title="t('packages.title')" :description="t('packages.subtitle')">
+    <PageHeader :title="pageTitle" :description="pageSubtitle">
       <template #actions>
+        <span class="ui-badge-muted">{{ t(currentDesc.labelKey) }}</span>
         <span v-if="filteredHint" class="ui-badge-muted">{{ filteredHint }}</span>
+        <RouterLink v-if="prefetchTo" class="ui-btn" :to="prefetchTo">{{ t('nav.prefetch') }}</RouterLink>
       </template>
     </PageHeader>
 
@@ -225,7 +324,7 @@ onUnmounted(() => {
       <input
         v-model="q"
         class="ui-input w-full"
-        :placeholder="t('packages.placeholder')"
+        :placeholder="searchPlaceholder"
         autofocus
       />
     </div>
@@ -242,10 +341,10 @@ onUnmounted(() => {
             @click="openPackage(p.name)"
           >
             <div class="flex items-center justify-between gap-2">
-              <span class="font-medium text-fg">{{ p.name }}</span>
-              <span v-if="p.cached" class="ui-badge-ok">{{ p.file_count }}</span>
-              <span v-else-if="p.has_index" class="ui-badge">{{ t('packages.versions') }}</span>
-              <span v-else class="text-xs text-muted">—</span>
+              <span class="truncate font-medium text-fg" :title="p.name">{{ p.name }}</span>
+              <span v-if="p.cached" class="ui-badge-ok shrink-0">{{ p.file_count }}</span>
+              <span v-else-if="p.has_index" class="ui-badge shrink-0">{{ t('packages.versions') }}</span>
+              <span v-else class="shrink-0 text-xs text-muted">—</span>
             </div>
             <div v-if="p.cached" class="truncate text-xs text-muted">
               {{ (p.versions || []).slice(0, 3).join(' · ') }}
@@ -270,8 +369,10 @@ onUnmounted(() => {
 
       <section class="ui-panel overflow-hidden">
         <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-2.5">
-          <h2 class="ui-section-title !mb-0">{{ selected || t('packages.detail') }}</h2>
-          <label class="flex items-center gap-2 text-xs text-muted">
+          <h2 class="ui-section-title !mb-0 truncate" :title="selected || undefined">
+            {{ selected || t('packages.detail') }}
+          </h2>
+          <label v-if="!isLocalMode" class="flex items-center gap-2 text-xs text-muted">
             <input v-model="showUpstream" type="checkbox" class="accent-accent" />
             {{ t('packages.upstreamVersions') }}
           </label>
@@ -291,7 +392,7 @@ onUnmounted(() => {
             </span>
           </div>
 
-          <div>
+          <div v-if="showVersions">
             <h3 class="ui-section-title">{{ t('packages.versions') }}</h3>
             <p v-if="detail.upstream_error" class="mb-2 text-sm text-danger">{{ detail.upstream_error }}</p>
             <div v-if="verSlice.length" class="flex flex-wrap gap-1.5">
@@ -301,7 +402,8 @@ onUnmounted(() => {
                 type="button"
                 class="ui-chip font-mono"
                 :class="(detail.versions || []).includes(v) ? 'ui-chip-active !text-ok ring-ok/30' : ''"
-                :title="t('packages.prefetchVersion')"
+                :title="canPrefetchVersion ? t('packages.prefetchVersion') : undefined"
+                :disabled="!canPrefetchVersion"
                 @click="requestPrefetch(v)"
               >
                 {{ v }}
@@ -365,7 +467,6 @@ onUnmounted(() => {
       </section>
     </div>
 
-    <!-- 删除确认弹窗 -->
     <ModalDialog
       v-model:visible="showDeleteModal"
       :title="t('common.delete')"

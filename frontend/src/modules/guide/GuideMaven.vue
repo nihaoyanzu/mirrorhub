@@ -36,12 +36,6 @@ const snippets = computed<GuideSnippet[]>(() => [
   maven { url = uri("${props.baseURL}/") }
 }`,
   },
-  {
-    key: 'mavenNote',
-    title: t('guide.mavenNote'),
-    text: t('guide.mavenNoteBody'),
-    hideCopy: true,
-  },
 ])
 </script>
 

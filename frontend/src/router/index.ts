@@ -44,7 +44,7 @@ const router = createRouter({
       meta: { titleKey: 'system.title' },
     },
     { path: '/rate-limit', redirect: { path: '/settings', query: { tab: 'rate' } } },
-    { path: '/cache', redirect: { path: '/platform', query: { tab: 'cache' } } },
+    { path: '/cache', redirect: { path: '/settings', query: { tab: 'cache' } } },
     {
       path: '/queue',
       name: 'queue',

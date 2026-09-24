@@ -5,7 +5,7 @@
 //  2. 在 init() 中调用 platform.Register()
 //  3. 在 proxy 包中以 blank import 引入
 //
-// 可选能力（LocalProber / UpstreamAuther / IndexKeyer / PrefetchExpander / TextDetector 等）
+// 可选能力（LocalProber / UpstreamAuther / IndexKeyer / PrefetchExpander / TextDetector / AccessProber 等）
 // 由编排层 type assert，勿在 proxy/prefetch/api 中按平台名字符串分支扩展。
 package platform
 

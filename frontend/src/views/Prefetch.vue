@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import TaskTable from '@/components/TaskTable.vue'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 import { useQueueStore } from '@/stores/queue'
+import { isKnownModule, MODULE_BY_ID, MODULES } from '@/modules/registry'
 import type { QueueTask } from '@/types/api'
 
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
 const toast = useToastStore()
 const queueStore = useQueueStore()
 
@@ -17,14 +20,53 @@ const text = ref('')
 const submitting = ref(false)
 const lastSkipped = ref<string[]>([])
 
+const moduleId = computed(() => {
+  const raw = route.query.module
+  const mod = String(Array.isArray(raw) ? raw[0] : raw || '')
+  if (isKnownModule(mod) && MODULE_BY_ID[mod]?.nav.prefetch) return mod
+  const fallback = MODULES.find((d) => d.nav.prefetch)?.id || 'pypi'
+  return fallback
+})
+
+const currentDesc = computed(() => MODULE_BY_ID[moduleId.value] || MODULES[0])
+
+const pasteHint = computed(() => {
+  const key = currentDesc.value.hints.prefetchPasteHintKey
+  return key ? t(key) : t('prefetch.hint')
+})
+
+const pastePlaceholder = computed(() => {
+  const key = currentDesc.value.hints.prefetchPlaceholderKey
+  return key ? t(key) : t('prefetch.placeholder')
+})
+
+const settingsTo = computed(() => `/platform?module=${moduleId.value}`)
+const cacheTo = computed(() =>
+  currentDesc.value.nav.catalog ? `/packages?module=${moduleId.value}` : '',
+)
+
 const prefetchTasks = computed(() =>
-  queueStore.tasks.filter((t: QueueTask) => t.priority === 'P2' || t.priority === 'P1'),
+  queueStore.tasks.filter(
+    (t: QueueTask) =>
+      (t.priority === 'P2' || t.priority === 'P1') &&
+      (!t.platform || t.platform === moduleId.value),
+  ),
 )
 
 const lineHint = computed(() => {
   const n = text.value.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith('#')).length
   return n > 1 ? t('prefetch.lines', { n }) : ''
 })
+
+function syncModuleFromRoute() {
+  const raw = route.query.module
+  const mod = String(Array.isArray(raw) ? raw[0] : raw || '')
+  if (!isKnownModule(mod) || !MODULE_BY_ID[mod]?.nav.prefetch) {
+    router.replace({ path: '/prefetch', query: { module: moduleId.value } })
+  }
+}
+
+watch(() => route.query.module, syncModuleFromRoute)
 
 async function submit() {
   const content = text.value.trim()
@@ -68,30 +110,41 @@ async function cancelMany(ids: string[]) {
   }
 }
 
-onMounted(() => queueStore.startPolling(4000))
+onMounted(() => {
+  syncModuleFromRoute()
+  queueStore.startPolling(4000)
+})
 onUnmounted(() => queueStore.stopPolling())
 </script>
 
 <template>
   <div>
-    <PageHeader :title="t('prefetch.title')" :description="t('prefetch.subtitle')">
+    <PageHeader
+      :title="`${t(currentDesc.labelKey)} · ${t('prefetch.title')}`"
+      :description="t('prefetch.subtitle')"
+    >
       <template #actions>
-        <RouterLink class="ui-btn" to="/platform?tab=prefetch">{{ t('prefetch.settingsLink') }}</RouterLink>
+        <span class="ui-badge-muted">{{ t(currentDesc.labelKey) }}</span>
+        <RouterLink v-if="cacheTo" class="ui-btn" :to="cacheTo">{{ t(currentDesc.nav.catalogLabelKey) }}</RouterLink>
+        <RouterLink class="ui-btn" :to="settingsTo">{{ t('prefetch.settingsLink') }}</RouterLink>
       </template>
     </PageHeader>
 
     <section class="ui-panel mb-5 p-4">
       <div class="mb-2 flex items-center justify-between gap-2">
-        <span class="ui-section-title !mb-0">{{ t('prefetch.submitDeps') }}</span>
+        <span class="ui-section-title !mb-0">
+          {{ t('prefetch.submitDeps') }}
+          <span class="ml-2 text-sm font-normal text-muted">{{ t(currentDesc.labelKey) }}</span>
+        </span>
         <span v-if="lineHint" class="ui-badge-muted">{{ lineHint }}</span>
       </div>
-      <p class="mb-3 text-xs text-muted">{{ t('prefetch.hint') }}</p>
+      <p class="mb-3 text-xs text-muted">{{ pasteHint }}</p>
       <form class="space-y-3" @submit.prevent="submit">
         <textarea
           v-model="text"
           rows="6"
           class="ui-input font-mono text-sm"
-          :placeholder="t('prefetch.placeholder')"
+          :placeholder="pastePlaceholder"
         />
         <div class="flex flex-wrap gap-2">
           <button type="submit" class="ui-btn-primary" :disabled="submitting">

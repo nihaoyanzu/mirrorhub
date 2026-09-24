@@ -105,6 +105,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/cache", s.getCache)
 			r.Delete("/cache", s.clearCache)
 			r.Get("/packages", s.listPackages)
+			r.Get("/packages/detail", s.getPackage)
 			r.Get("/packages/{name}", s.getPackage)
 			r.Delete("/packages/entry", s.deletePackageEntry)
 		})

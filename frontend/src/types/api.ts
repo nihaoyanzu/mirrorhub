@@ -22,9 +22,17 @@ export interface AccessTestCheck {
   ms: number
 }
 
-export interface AccessTestResult {
+export interface AccessTestModule {
+  id: string
   ok: boolean
   checks: AccessTestCheck[]
+}
+
+export interface AccessTestResult {
+  ok: boolean
+  modules?: AccessTestModule[]
+  /** @deprecated 旧单模块响应 */
+  checks?: AccessTestCheck[]
 }
 
 export interface TrafficRecord {

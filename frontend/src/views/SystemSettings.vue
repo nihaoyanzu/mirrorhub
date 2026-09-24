@@ -2,9 +2,12 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import ModalDialog from '@/components/ModalDialog.vue'
 import { api } from '@/api/client'
 import { useSessionStore } from '@/stores/session'
 import { useToastStore } from '@/stores/toast'
+import type { AppConfig, PlatformConfig } from '@/types/api'
+import { MODULES } from '@/modules/registry'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -15,7 +18,12 @@ const loading = ref(false)
 const saving = ref(false)
 const dirty = ref(false)
 const pwdSaving = ref(false)
-const tab = ref<'network' | 'rate' | 'concurrency' | 'account'>('network')
+const showClearModal = ref(false)
+const clearing = ref(false)
+const tab = ref<'network' | 'rate' | 'concurrency' | 'download' | 'cache' | 'account'>('network')
+
+/** 保存分片时回写全部平台；保留接入字段 */
+const platformsSnapshot = ref<Record<string, PlatformConfig>>({})
 
 const form = reactive({
   upstream_proxy: '',
@@ -28,13 +36,12 @@ const form = reactive({
   resume_on_idle: true,
   small_file_boost_enabled: true,
   small_file_boost_kb: 512,
-  // 预取制品字段：系统页不编辑，保存时原样带回，避免冲掉模块设置
-  artifact_mode: 'portable',
-  extra_wheel_tags: [] as string[],
-  target_python: [] as string[],
-  target_platforms: ['linux'] as string[],
-  max_depth: 5,
-  max_packages: 200,
+  concurrency: 16,
+  chunk_size: 5242880,
+  min_size: 102400,
+  max_size_gb: 100,
+  index_ttl_seconds: 604800,
+  package_ttl_seconds: 0,
 })
 
 type RateWindowRow = { start: string; end: string; bandwidth_mbps: number }
@@ -49,12 +56,30 @@ const tabs = computed(() => [
   { id: 'network' as const, label: t('system.tabNetwork') },
   { id: 'rate' as const, label: t('system.tabRate') },
   { id: 'concurrency' as const, label: t('system.tabConcurrency') },
+  { id: 'download' as const, label: t('system.tabDownload') },
+  { id: 'cache' as const, label: t('system.tabCache') },
   { id: 'account' as const, label: t('system.tabAccount') },
 ])
 
+const configTabs = computed(() => tab.value !== 'account')
+
 function syncTabFromRoute() {
   const q = String(route.query.tab || '')
-  if (q === 'network' || q === 'rate' || q === 'concurrency' || q === 'account') tab.value = q
+  // 制品预取策略已迁至各模块「平台与上游」页
+  if (q === 'prefetch') {
+    router.replace({ path: '/platform', query: { module: 'pypi' } })
+    return
+  }
+  if (
+    q === 'network' ||
+    q === 'rate' ||
+    q === 'concurrency' ||
+    q === 'download' ||
+    q === 'cache' ||
+    q === 'account'
+  ) {
+    tab.value = q
+  }
 }
 
 function setTab(id: typeof tab.value) {
@@ -111,10 +136,46 @@ function applyPreset(kind: 'off' | 'always' | 'work_limit' | 'offwork_limit') {
   markDirty()
 }
 
+/** 仅更新调度相关字段，保留模块页编辑的制品策略 */
+function schedulerPayload(existing: AppConfig['scheduler'] | undefined) {
+  const prev = existing?.prefetch
+  return {
+    prefetch: {
+      idle_quota_ratio: form.idle_quota_ratio,
+      on_interactive: form.on_interactive,
+      resume_on_idle: form.resume_on_idle,
+      artifact_mode: prev?.artifact_mode || 'portable',
+      extra_wheel_tags: prev?.extra_wheel_tags || [],
+      target_python: prev?.target_python || ['3.10', '3.11', '3.12'],
+      target_platforms: prev?.target_platforms?.length
+        ? [...prev.target_platforms]
+        : [prev?.target_platform || 'linux'],
+      target_platform: prev?.target_platform || prev?.target_platforms?.[0] || 'linux',
+      max_depth: prev?.max_depth ?? 5,
+      max_packages: prev?.max_packages ?? 200,
+    },
+    small_file_boost: {
+      enabled: form.small_file_boost_enabled,
+      max_size_kb: form.small_file_boost_kb,
+    },
+  }
+}
+
+function rateLimitPayload() {
+  return {
+    bandwidth_mbps: form.bandwidth_mbps,
+    max_concurrent: form.max_concurrent,
+    max_connections: form.max_connections,
+    windows: normalizeWindows(form.windows),
+  }
+}
+
 async function load() {
   loading.value = true
   try {
-    const cfg = await api.getConfig()
+    const cfg: AppConfig = await api.getConfig()
+    platformsSnapshot.value = { ...(cfg.platforms || {}) }
+
     form.upstream_proxy = cfg.server?.upstream_proxy || ''
     const rl = cfg.rate_limit
     form.bandwidth_mbps = rl?.bandwidth_mbps ?? 0
@@ -127,6 +188,21 @@ async function load() {
         bandwidth_mbps: w.bandwidth_mbps ?? 0,
       })),
     )
+
+    const dlSrc =
+      cfg.platforms?.pypi?.download ||
+      cfg.platforms?.[MODULES[0].id]?.download ||
+      Object.values(cfg.platforms || {})[0]?.download
+    form.concurrency = dlSrc?.concurrency ?? 16
+    form.chunk_size = dlSrc?.chunk_size ?? 5242880
+    form.min_size = dlSrc?.min_size ?? 102400
+
+    if (cfg.cache) {
+      form.max_size_gb = cfg.cache.max_size_gb ?? 100
+      form.index_ttl_seconds = cfg.cache.index_ttl_seconds ?? 604800
+      form.package_ttl_seconds = cfg.cache.package_ttl_seconds ?? 0
+    }
+
     const sch = cfg.scheduler
     if (sch) {
       form.idle_quota_ratio = sch.prefetch?.idle_quota_ratio ?? 0.3
@@ -134,21 +210,6 @@ async function load() {
       form.resume_on_idle = sch.prefetch?.resume_on_idle !== false
       form.small_file_boost_enabled = sch.small_file_boost?.enabled !== false
       form.small_file_boost_kb = sch.small_file_boost?.max_size_kb ?? 512
-      form.artifact_mode = sch.prefetch?.artifact_mode || 'portable'
-      form.extra_wheel_tags = sch.prefetch?.extra_wheel_tags || []
-      form.target_python = Array.isArray(sch.prefetch?.target_python)
-        ? sch.prefetch.target_python
-        : []
-      const plats = sch.prefetch?.target_platforms
-      if (Array.isArray(plats) && plats.length) {
-        form.target_platforms = [...plats]
-      } else if (sch.prefetch?.target_platform) {
-        form.target_platforms = [sch.prefetch.target_platform]
-      } else {
-        form.target_platforms = ['linux']
-      }
-      form.max_depth = sch.prefetch?.max_depth ?? 5
-      form.max_packages = sch.prefetch?.max_packages ?? 200
     }
     dirty.value = false
   } catch (e: any) {
@@ -162,35 +223,47 @@ async function save() {
   saving.value = true
   try {
     if (tab.value === 'network') {
-      await api.putConfig({
-        upstream_proxy: form.upstream_proxy,
-      })
+      await api.putConfig({ upstream_proxy: form.upstream_proxy })
     } else if (tab.value === 'rate' || tab.value === 'concurrency') {
-      // 两页共享 rate_limit / scheduler，保存时整包带回，避免互相冲掉
+      const cfg = await api.getConfig()
       await api.putConfig({
-        rate_limit: {
-          bandwidth_mbps: form.bandwidth_mbps,
-          max_concurrent: form.max_concurrent,
-          max_connections: form.max_connections,
-          windows: normalizeWindows(form.windows),
-        },
-        scheduler: {
-          prefetch: {
-            idle_quota_ratio: form.idle_quota_ratio,
-            on_interactive: form.on_interactive,
-            resume_on_idle: form.resume_on_idle,
-            artifact_mode: form.artifact_mode,
-            extra_wheel_tags: form.extra_wheel_tags,
-            target_python: form.target_python,
-            target_platforms: form.target_platforms.length ? [...form.target_platforms] : ['linux'],
-            target_platform: form.target_platforms[0] || 'linux',
-            max_depth: form.max_depth,
-            max_packages: form.max_packages,
-          },
-          small_file_boost: {
-            enabled: form.small_file_boost_enabled,
-            max_size_kb: form.small_file_boost_kb,
-          },
+        rate_limit: rateLimitPayload(),
+        scheduler: schedulerPayload(cfg.scheduler),
+      })
+    } else if (tab.value === 'download') {
+      const download = {
+        concurrency: form.concurrency,
+        chunk_size: form.chunk_size,
+        min_size: form.min_size,
+      }
+      const platforms: Record<string, PlatformConfig> = { ...platformsSnapshot.value }
+      for (const desc of MODULES) {
+        const prev = platforms[desc.id]
+        platforms[desc.id] = {
+          enabled: prev?.enabled ?? true,
+          upstream: prev?.upstream || desc.defaults.upstream,
+          file_upstream: prev?.file_upstream || prev?.upstream || desc.defaults.file_upstream,
+          metadata_upstream: prev?.metadata_upstream ?? desc.defaults.metadata_upstream,
+          upstream_token: prev?.upstream_token,
+          download: { ...download },
+        }
+      }
+      for (const id of Object.keys(platforms)) {
+        if (MODULES.some((d) => d.id === id)) continue
+        const prev = platforms[id]
+        platforms[id] = {
+          ...prev,
+          download: { ...download },
+        }
+      }
+      await api.putConfig({ platforms })
+      platformsSnapshot.value = platforms
+    } else if (tab.value === 'cache') {
+      await api.putConfig({
+        cache: {
+          max_size_gb: form.max_size_gb,
+          index_ttl_seconds: form.index_ttl_seconds,
+          package_ttl_seconds: form.package_ttl_seconds,
         },
       })
     }
@@ -200,6 +273,19 @@ async function save() {
     toast.err(e.message || t('system.saveFailed'))
   } finally {
     saving.value = false
+  }
+}
+
+async function clearCache() {
+  clearing.value = true
+  try {
+    await api.clearCache()
+    toast.ok(t('cache.cleared'))
+  } catch (e: any) {
+    toast.err(e.message || t('cache.clearFailed'))
+  } finally {
+    clearing.value = false
+    showClearModal.value = false
   }
 }
 
@@ -259,7 +345,7 @@ onMounted(() => {
         </button>
       </div>
       <div class="flex shrink-0 flex-wrap items-center gap-2">
-        <template v-if="tab === 'network' || tab === 'rate' || tab === 'concurrency'">
+        <template v-if="configTabs">
           <span v-if="dirty" class="ui-badge-warn">{{ t('common.unsaved') }}</span>
           <button class="ui-btn" :disabled="loading || saving" @click="load">{{ t('system.reload') }}</button>
           <button class="ui-btn-primary" :disabled="loading || saving" @click="save">
@@ -337,7 +423,9 @@ onMounted(() => {
               min="0"
               step="0.1"
               class="ui-input"
+              placeholder="0"
             />
+            <p class="mt-1 text-xs text-muted">{{ t('system.defaultMbpsHint') }}</p>
           </div>
         </div>
       </div>
@@ -451,6 +539,62 @@ onMounted(() => {
       </div>
     </section>
 
+    <section
+      v-else-if="tab === 'download'"
+      class="ui-panel space-y-5 p-5"
+      @input="markDirty"
+      @change="markDirty"
+    >
+      <p class="text-xs text-muted">{{ t('system.downloadHint') }}</p>
+      <h3 class="ui-section-title">{{ t('platform.sectionDownload') }}</h3>
+      <div class="grid gap-4 sm:grid-cols-3">
+        <div>
+          <label class="ui-label">{{ t('platform.chunkConcurrency') }}</label>
+          <input v-model.number="form.concurrency" type="number" min="1" class="ui-input" />
+        </div>
+        <div>
+          <label class="ui-label">{{ t('platform.chunkSize') }}</label>
+          <input v-model.number="form.chunk_size" type="number" min="1" class="ui-input" />
+        </div>
+        <div>
+          <label class="ui-label">{{ t('platform.parallelMinSize') }}</label>
+          <input v-model.number="form.min_size" type="number" min="0" class="ui-input" />
+        </div>
+      </div>
+    </section>
+
+    <section
+      v-else-if="tab === 'cache'"
+      class="ui-panel space-y-5 p-5"
+      @input="markDirty"
+      @change="markDirty"
+    >
+      <p class="text-xs text-muted">{{ t('system.cacheHint') }}</p>
+      <div class="grid gap-4 sm:grid-cols-3">
+        <div>
+          <label class="ui-label">{{ t('platform.cacheGB') }}</label>
+          <input v-model.number="form.max_size_gb" type="number" min="1" class="ui-input" />
+        </div>
+        <div>
+          <label class="ui-label">{{ t('platform.indexTTL') }}</label>
+          <input v-model.number="form.index_ttl_seconds" type="number" min="1" class="ui-input" />
+          <p class="mt-1 text-xs text-muted">{{ t('platform.indexTTLHint') }}</p>
+        </div>
+        <div>
+          <label class="ui-label">{{ t('platform.packageTTL') }}</label>
+          <input v-model.number="form.package_ttl_seconds" type="number" min="0" class="ui-input" />
+          <p class="mt-1 text-xs text-muted">{{ t('platform.packageTTLHint') }}</p>
+        </div>
+      </div>
+      <div class="border-t border-danger/20 pt-5">
+        <h3 class="mb-2 text-sm font-medium text-danger">{{ t('platform.dangerZone') }}</h3>
+        <p class="mb-4 text-xs text-muted">{{ t('platform.clearCacheDesc') }}</p>
+        <button class="ui-btn-danger" :disabled="clearing" @click="showClearModal = true">
+          {{ t('platform.clearCache') }}
+        </button>
+      </div>
+    </section>
+
     <section v-else-if="tab === 'account'" class="ui-panel space-y-5 p-5">
       <p class="text-xs text-muted">
         {{ t('system.accountHint', { name: session.username || '—' }) }}
@@ -488,5 +632,14 @@ onMounted(() => {
         </div>
       </form>
     </section>
+
+    <ModalDialog
+      v-model:visible="showClearModal"
+      :title="t('platform.clearCache')"
+      :description="t('platform.clearCacheConfirm')"
+      danger
+      @cancel="showClearModal = false"
+      @confirm="clearCache"
+    />
   </div>
 </template>

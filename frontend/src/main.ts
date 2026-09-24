@@ -11,6 +11,10 @@ app.use(createPinia())
 app.use(router)
 app.use(i18n)
 
+app.config.errorHandler = (err, _instance, info) => {
+  console.error('[vue]', info, err)
+}
+
 // 等首屏路由解析完成再挂载，避免 / 等公开页短暂落到 AppShell 触发 /me→401→跳登录
 router.isReady().then(() => {
   app.mount('#app')

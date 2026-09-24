@@ -17,20 +17,14 @@ const { t } = useI18n()
 
 const snippets = computed<GuideSnippet[]>(() => [
   {
-    key: 'goproxyEnv',
-    title: t('guide.goproxyEnv'),
-    text: `export GOPROXY=${props.baseURL},direct\n# 可选：私有模块仍走直连\n# export GOPRIVATE=*.example.com`,
+    key: 'goproxyGlobal',
+    title: t('guide.goproxyGlobal'),
+    text: `go env -w GOPROXY=${props.baseURL},direct\n# 可选：私有模块仍走直连\n# go env -w GOPRIVATE=*.example.com\n# 完全离线（仅用已缓存）\n# go env -w GOPROXY=${props.baseURL},off`,
   },
   {
-    key: 'goproxyOffline',
-    title: t('guide.goproxyOffline'),
-    text: `# 完全离线（仅用已缓存；勿加 ,direct）\nexport GOPROXY=${props.baseURL},off\ngo mod download`,
-  },
-  {
-    key: 'goproxyNote',
-    title: t('guide.goproxyNote'),
-    text: t('guide.goproxyNoteBody'),
-    hideCopy: true,
+    key: 'goproxyLocal',
+    title: t('guide.goproxyLocal'),
+    text: `# 当前终端\nexport GOPROXY=${props.baseURL},direct\n# 可选：export GOPRIVATE=*.example.com\n\n# 单次命令\nGOPROXY=${props.baseURL},direct go mod download\n\n# 完全离线（仅用已缓存）\n# export GOPROXY=${props.baseURL},off`,
   },
 ])
 </script>
