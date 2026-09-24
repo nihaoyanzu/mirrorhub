@@ -149,7 +149,8 @@ func ParseImageRef(raw string) (ImageRef, bool) {
 	} else if i := strings.LastIndex(raw, ":"); i > 0 && !strings.Contains(raw[i+1:], "/") {
 		repo, tag = raw[:i], raw[i+1:]
 	} else {
-		repo, tag = raw, "latest"
+		// 禁止裸名默认 :latest，否则 cryptography / django 等 PyPI 包会被误判为 Docker 镜像
+		return ImageRef{}, false
 	}
 	repo = NormalizeRepo(repo)
 	if repo == "" || tag == "" {
