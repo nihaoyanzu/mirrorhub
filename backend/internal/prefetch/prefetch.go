@@ -16,6 +16,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
+	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/scheduler"
@@ -117,6 +118,12 @@ func platformNameForItem(item string) string {
 	if dockerhandler.IsDockerBlobURL(item) {
 		return "docker"
 	}
+	if goproxyhandler.IsGoproxyArtifactURL(item) {
+		return "goproxy"
+	}
+	if _, ok := goproxyhandler.ParseModuleRef(item); ok {
+		return "goproxy"
+	}
 	if _, ok := dockerhandler.ParseImageRef(item); ok {
 		return "docker"
 	}
@@ -129,6 +136,8 @@ func platformConfigForURL(cfg config.Config, rawURL string) (string, config.Plat
 		name = "npm"
 	} else if dockerhandler.IsDockerBlobURL(rawURL) {
 		name = "docker"
+	} else if goproxyhandler.IsGoproxyArtifactURL(rawURL) {
+		name = "goproxy"
 	}
 	pcfg, ok := cfg.Platforms[name]
 	if !ok {
@@ -142,6 +151,9 @@ func platformConfigForURL(cfg config.Config, rawURL string) (string, config.Plat
 func (s *Service) expandItem(ctx context.Context, item string) ([]string, error) {
 	if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
 		return []string{item}, nil
+	}
+	if ref, ok := goproxyhandler.ParseModuleRef(item); ok {
+		return s.expandGoproxyModule(ctx, ref)
 	}
 	if ref, ok := dockerhandler.ParseImageRef(item); ok {
 		return s.expandDockerImage(ctx, ref)
@@ -287,6 +299,57 @@ func (s *Service) dockerTokenSource(cfg config.Config) *dockerhandler.TokenSourc
 	s.dockerAuth = dockerhandler.NewTokenSource(authBase, svc, nil)
 	s.dockerAuthKey = key
 	return s.dockerAuth
+}
+
+func (s *Service) expandGoproxyModule(ctx context.Context, ref goproxyhandler.ModuleRef) ([]string, error) {
+	cfg := s.cfg.Get()
+	pcfg, ok := cfg.Platforms["goproxy"]
+	if !ok || !pcfg.Enabled {
+		return nil, fmt.Errorf("goproxy 模块未启用")
+	}
+	modUp := strings.TrimRight(strings.TrimSpace(pcfg.Upstream), "/")
+	if modUp == "" {
+		modUp = "https://goproxy.cn"
+	}
+	sumUp := strings.TrimRight(strings.TrimSpace(pcfg.MetadataUpstream), "/")
+	if sumUp == "" {
+		sumUp = modUp
+	}
+	infoURL, modURL, zipURL, lookupURL, err := goproxyhandler.ModuleProxyURLs(modUp, sumUp, ref.Path, ref.Version)
+	if err != nil {
+		return nil, err
+	}
+	// .info 与 sumdb lookup 写入索引缓存（与代理 handleIndex 键一致）
+	for _, u := range []string{infoURL, lookupURL} {
+		if u == "" {
+			continue
+		}
+		status, respHeader, body, getErr := s.dl.ProxyBytes(ctx, http.MethodGet, u, nil, nil, "goproxy", true)
+		if getErr != nil || status < 200 || status >= 300 {
+			if s.log != nil {
+				s.log.Warn("prefetch goproxy index skip", zap.String("url", u), zap.Int("status", status), zap.Error(getErr))
+			}
+			continue
+		}
+		ct := respHeader.Get("Content-Type")
+		if pathURL, err := url.Parse(u); err == nil {
+			ct = goproxyhandler.DetectContentType(pathURL.Path, ct, body)
+		}
+		key := "goproxy:index:" + cache.KeyFromURL(u)
+		if _, err := s.cache.PutBytes(key, body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
+			SourceURL:    u,
+			Kind:         "index",
+			UpstreamETag: respHeader.Get("ETag"),
+		}); err != nil && s.log != nil {
+			s.log.Warn("goproxy index cache put failed", zap.String("key", key), zap.Error(err))
+		}
+	}
+	s.log.Info("prefetch goproxy resolved",
+		zap.String("module", ref.Path),
+		zap.String("version", ref.Version),
+	)
+	// .mod / .zip 走 P2 制品下载
+	return []string{modURL, zipURL}, nil
 }
 
 func (s *Service) resolvePackageFiles(ctx context.Context, req *pypihandler.Requirement, pf config.PrefetchConfig) (files []string, metaURL string, err error) {

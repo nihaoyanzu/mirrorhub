@@ -244,7 +244,8 @@ pip ──► /simple/     索引（链接已改写到下载服务）
 | 客户端 | 状态 | 预期配置 |
 |--------|:----:|----------|
 | pip / uv | ✅ | `-i http://localhost:18081/simple/` |
+| npm | ✅ | `npm config set registry http://localhost:18081/` |
+| Docker | ✅ | `registry-mirrors` → `http://localhost:18081` |
+| Go modules | ✅ | `export GOPROXY=http://localhost:18081,direct` |
 | HuggingFace | ☐ | `export HF_ENDPOINT=http://localhost:18081` |
-| npm | ☐ | `npm config set registry http://localhost:18081/` |
-| Docker | ☐ | `registry-mirrors` → `http://localhost:18081` |
 | R / CRAN | ☐ | `options(repos = c(CRAN = "http://localhost:18081/"))` |

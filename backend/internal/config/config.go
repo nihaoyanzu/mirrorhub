@@ -365,6 +365,15 @@ func defaultRuntime() RuntimeSettings {
 					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 				},
 			},
+			"goproxy": {
+				Enabled:          false,
+				Upstream:         "https://goproxy.cn",
+				FileUpstream:     "https://goproxy.cn",
+				MetadataUpstream: "https://goproxy.cn",
+				Download: DownloadConfig{
+					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+				},
+			},
 		},
 		RateLimit: RateLimitConfig{
 			BandwidthMbps: 0, MaxConcurrent: 20, MaxConnections: 80,
@@ -544,6 +553,40 @@ func applyDefaults(cfg *Config) {
 		}
 		p.RateLimit = nil
 		cfg.Platforms["docker"] = p
+	}
+	// 旧库无 goproxy 条目时补齐（默认关闭）
+	if _, ok := cfg.Platforms["goproxy"]; !ok {
+		cfg.Platforms["goproxy"] = PlatformConfig{
+			Enabled:          false,
+			Upstream:         "https://goproxy.cn",
+			FileUpstream:     "https://goproxy.cn",
+			MetadataUpstream: "https://goproxy.cn",
+			Download: DownloadConfig{
+				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+			},
+		}
+	}
+	if p, ok := cfg.Platforms["goproxy"]; ok {
+		if p.Download.Concurrency <= 0 {
+			p.Download.Concurrency = 16
+		}
+		if p.Download.ChunkSize <= 0 {
+			p.Download.ChunkSize = 5 * 1024 * 1024
+		}
+		if p.Download.MinSize <= 0 {
+			p.Download.MinSize = 100 * 1024
+		}
+		if p.Upstream == "" {
+			p.Upstream = "https://goproxy.cn"
+		}
+		if p.FileUpstream == "" {
+			p.FileUpstream = p.Upstream
+		}
+	if p.MetadataUpstream == "" {
+		p.MetadataUpstream = p.Upstream // sumdb 经 module 上游 /sumdb/...（如 goproxy.cn）
+	}
+		p.RateLimit = nil
+		cfg.Platforms["goproxy"] = p
 	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"

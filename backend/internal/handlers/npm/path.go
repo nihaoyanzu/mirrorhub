@@ -28,6 +28,9 @@ func IsReservedProxyPath(path string) bool {
 		return true
 	case strings.HasPrefix(path, "/v2/") || path == "/v2":
 		return true
+	case strings.Contains(path, "/@v/") || strings.HasSuffix(path, "/@latest") || strings.HasPrefix(path, "/sumdb/"):
+		// Go module proxy / sumdb，避免 npm 抢路由
+		return true
 	default:
 		return false
 	}

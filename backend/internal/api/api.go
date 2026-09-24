@@ -19,6 +19,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
+	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
@@ -351,6 +352,18 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 				} else {
 					items = append(items, ref.Repo+":"+ref.Tag)
 				}
+			}
+			skipped = skip
+		case goproxyhandler.LookLikeGoSum(body.Text):
+			refs, skip := goproxyhandler.ParseGoSum(body.Text)
+			for _, ref := range refs {
+				items = append(items, ref.Path+"@"+ref.Version)
+			}
+			skipped = skip
+		case goproxyhandler.LookLikeGoMod(body.Text):
+			refs, skip := goproxyhandler.ParseGoMod(body.Text)
+			for _, ref := range refs {
+				items = append(items, ref.Path+"@"+ref.Version)
 			}
 			skipped = skip
 		default:

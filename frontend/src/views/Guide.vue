@@ -131,6 +131,24 @@ const dockerSnippets = computed(() => [
   },
 ])
 
+const goproxySnippets = computed(() => [
+  {
+    key: 'goproxyEnv',
+    title: t('guide.goproxyEnv'),
+    text: `export GOPROXY=${baseURL.value},direct\n# 可选：私有模块仍走直连\n# export GOPRIVATE=*.example.com`,
+  },
+  {
+    key: 'goproxyOffline',
+    title: t('guide.goproxyOffline'),
+    text: `# 完全离线（仅用已缓存；勿加 ,direct）\nexport GOPROXY=${baseURL.value},off\ngo mod download`,
+  },
+  {
+    key: 'goproxyNote',
+    title: t('guide.goproxyNote'),
+    text: t('guide.goproxyNoteBody'),
+  },
+])
+
 function syncTab() {
   const ids = enabledModules.value.map((m) => m.id)
   if (!ids.length) {
@@ -163,6 +181,7 @@ function moduleTitle(id: string) {
   if (id === 'pypi') return 'PyPI'
   if (id === 'npm') return 'npm'
   if (id === 'docker') return 'Docker'
+  if (id === 'goproxy') return 'Go'
   return id
 }
 
@@ -177,6 +196,7 @@ onMounted(async () => {
         { id: 'pypi', enabled: true },
         { id: 'npm', enabled: false },
         { id: 'docker', enabled: false },
+        { id: 'goproxy', enabled: false },
       ],
     }
   } finally {
@@ -354,6 +374,34 @@ onMounted(async () => {
                   <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
                   <button
                     v-if="item.key !== 'dockerOffline'"
+                    type="button"
+                    class="ui-btn-ghost !px-2 !py-1 text-xs"
+                    @click="copyText(item.key, item.text)"
+                  >
+                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
+                  </button>
+                </div>
+                <pre
+                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
+                >{{ item.text }}</pre>
+              </article>
+            </div>
+          </section>
+
+          <section v-else-if="activeTab === 'goproxy'" class="ui-panel overflow-hidden">
+            <div class="border-b border-line p-4 sm:p-5">
+              <p class="text-xs text-muted">{{ t('guide.goproxyHint') }}</p>
+            </div>
+            <div class="grid gap-3 p-4 sm:p-5">
+              <article
+                v-for="item in goproxySnippets"
+                :key="item.key"
+                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
+              >
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
+                  <button
+                    v-if="item.key !== 'goproxyNote'"
                     type="button"
                     class="ui-btn-ghost !px-2 !py-1 text-xs"
                     @click="copyText(item.key, item.text)"

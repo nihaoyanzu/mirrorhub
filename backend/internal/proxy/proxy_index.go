@@ -154,8 +154,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(result.Body)))
 	w.Header().Set("ETag", result.ETag)
-	setDockerManifestHeaders(w, m.Platform, result.Body)
 	writeProxyHeaders(w, respHeader, result.ContentType, status, "MISS", "index", boost)
+	setDockerManifestHeaders(w, m.Platform, result.Body)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(result.Body)
 	}

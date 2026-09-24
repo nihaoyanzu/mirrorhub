@@ -17,7 +17,7 @@ const saving = ref(false)
 const testing = ref(false)
 const dirty = ref(false)
 const tab = ref<'access' | 'download' | 'prefetch' | 'cache'>('access')
-const moduleId = ref<'pypi' | 'npm' | 'docker'>('pypi')
+const moduleId = ref<'pypi' | 'npm' | 'docker' | 'goproxy'>('pypi')
 const showClearModal = ref(false)
 const clearing = ref(false)
 const testChecks = ref<AccessTestCheck[] | null>(null)
@@ -66,7 +66,7 @@ const tabs = computed(() => {
     { id: 'access' as const, label: t('platform.tabAccess') },
     { id: 'download' as const, label: t('platform.tabDownload') },
   ]
-  if (moduleId.value === 'pypi' || moduleId.value === 'docker') {
+  if (moduleId.value === 'pypi' || moduleId.value === 'docker' || moduleId.value === 'goproxy') {
     base.push({ id: 'prefetch' as const, label: t('platform.tabPrefetch') })
   }
   base.push({ id: 'cache' as const, label: t('platform.tabCache') })
@@ -77,11 +77,13 @@ const moduleOptions = [
   { id: 'pypi' as const, labelKey: 'platform.modulePyPI' },
   { id: 'npm' as const, labelKey: 'platform.moduleNpm' },
   { id: 'docker' as const, labelKey: 'platform.moduleDocker' },
+  { id: 'goproxy' as const, labelKey: 'platform.moduleGoproxy' },
 ] as const
 
 const enableLabel = computed(() => {
   if (moduleId.value === 'npm') return t('platform.enableNpm')
   if (moduleId.value === 'docker') return t('platform.enableDocker')
+  if (moduleId.value === 'goproxy') return t('platform.enableGoproxy')
   return t('platform.enablePyPI')
 })
 
@@ -128,11 +130,11 @@ function syncTabFromRoute() {
     tab.value = q
   }
   const mod = String(route.query.module || '')
-  if ((mod === 'pypi' || mod === 'npm' || mod === 'docker') && mod !== moduleId.value) {
+  if ((mod === 'pypi' || mod === 'npm' || mod === 'docker' || mod === 'goproxy') && mod !== moduleId.value) {
     snapshotCurrentPlatform()
-    moduleId.value = mod as 'pypi' | 'npm' | 'docker'
+    moduleId.value = mod as 'pypi' | 'npm' | 'docker' | 'goproxy'
     applyPlatformDraft(moduleId.value)
-    if ((mod === 'npm') && tab.value === 'prefetch') {
+    if (mod === 'npm' && tab.value === 'prefetch') {
       tab.value = 'access'
     }
   }
@@ -155,7 +157,7 @@ function snapshotCurrentPlatform() {
   }
 }
 
-function applyPlatformDraft(id: 'pypi' | 'npm' | 'docker') {
+function applyPlatformDraft(id: 'pypi' | 'npm' | 'docker' | 'goproxy') {
   const d = platformDrafts[id]
   if (!d) return
   form.enabled = d.enabled
@@ -167,7 +169,7 @@ function applyPlatformDraft(id: 'pypi' | 'npm' | 'docker') {
   form.min_size = d.min_size
 }
 
-function setModule(id: 'pypi' | 'npm' | 'docker') {
+function setModule(id: 'pypi' | 'npm' | 'docker' | 'goproxy') {
   if (id === moduleId.value) return
   snapshotCurrentPlatform()
   moduleId.value = id
@@ -221,6 +223,16 @@ async function load() {
       chunk_size: docker?.download?.chunk_size ?? 5242880,
       min_size: docker?.download?.min_size ?? 102400,
     }
+    const goproxy = cfg.platforms?.goproxy
+    platformDrafts.goproxy = {
+      enabled: !!goproxy?.enabled,
+      upstream: goproxy?.upstream || 'https://goproxy.cn',
+      file_upstream: goproxy?.file_upstream || goproxy?.upstream || 'https://goproxy.cn',
+      metadata_upstream: goproxy?.metadata_upstream || goproxy?.upstream || 'https://goproxy.cn',
+      concurrency: goproxy?.download?.concurrency ?? 16,
+      chunk_size: goproxy?.download?.chunk_size ?? 5242880,
+      min_size: goproxy?.download?.min_size ?? 102400,
+    }
     applyPlatformDraft(moduleId.value)
 
     if (cfg.cache) {
@@ -255,7 +267,7 @@ async function save() {
   try {
     snapshotCurrentPlatform()
     const platforms: Record<string, unknown> = {}
-    for (const id of ['pypi', 'npm', 'docker'] as const) {
+    for (const id of ['pypi', 'npm', 'docker', 'goproxy'] as const) {
       const d = platformDrafts[id]
       if (!d) continue
       platforms[id] = {
@@ -413,13 +425,26 @@ onMounted(() => {
         <h3 class="ui-section-title">{{ t('platform.sectionUpstream') }}</h3>
         <p v-if="moduleId === 'npm'" class="mb-3 text-xs text-muted">{{ t('platform.npmUpstreamHint') }}</p>
         <p v-else-if="moduleId === 'docker'" class="mb-3 text-xs text-muted">{{ t('platform.dockerUpstreamHint') }}</p>
+        <p v-else-if="moduleId === 'goproxy'" class="mb-3 text-xs text-muted">{{ t('platform.goproxyUpstreamHint') }}</p>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="ui-label">{{ moduleId === 'docker' ? t('platform.registryUpstream') : t('platform.indexUpstream') }}</label>
+            <label class="ui-label">{{
+              moduleId === 'docker'
+                ? t('platform.registryUpstream')
+                : moduleId === 'goproxy'
+                  ? t('platform.moduleUpstream')
+                  : t('platform.indexUpstream')
+            }}</label>
             <input v-model="form.upstream" class="ui-input" />
           </div>
           <div>
-            <label class="ui-label">{{ moduleId === 'docker' ? t('platform.blobUpstream') : t('platform.fileUpstream') }}</label>
+            <label class="ui-label">{{
+              moduleId === 'docker'
+                ? t('platform.blobUpstream')
+                : moduleId === 'goproxy'
+                  ? t('platform.moduleFileUpstream')
+                  : t('platform.fileUpstream')
+            }}</label>
             <input v-model="form.file_upstream" class="ui-input" />
           </div>
           <div v-if="moduleId === 'pypi'" class="sm:col-span-2">
@@ -448,6 +473,15 @@ onMounted(() => {
               placeholder="https://auth.docker.io"
             />
             <p class="mt-1 text-xs text-muted">{{ t('platform.authUpstreamHint') }}</p>
+          </div>
+          <div v-else-if="moduleId === 'goproxy'" class="sm:col-span-2">
+            <label class="ui-label">{{ t('platform.sumdbUpstream') }}</label>
+            <input
+              v-model="form.metadata_upstream"
+              class="ui-input"
+              placeholder="https://goproxy.cn"
+            />
+            <p class="mt-1 text-xs text-muted">{{ t('platform.sumdbUpstreamHint') }}</p>
           </div>
         </div>
 
@@ -497,6 +531,7 @@ onMounted(() => {
 
       <section v-show="tab === 'prefetch'" class="ui-panel p-5">
         <p v-if="moduleId === 'npm'" class="text-sm text-muted">{{ t('platform.npmPrefetchHint') }}</p>
+        <p v-else-if="moduleId === 'goproxy'" class="text-sm text-muted">{{ t('platform.goproxyPrefetchHint') }}</p>
         <template v-else-if="moduleId === 'docker'">
           <p class="mb-4 text-sm text-muted">{{ t('platform.dockerPrefetchHint') }}</p>
           <div class="sm:col-span-3">

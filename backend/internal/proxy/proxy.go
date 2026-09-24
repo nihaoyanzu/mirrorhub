@@ -16,13 +16,15 @@ import (
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
+	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
 	"github.com/livehl/mirrorhub/internal/platform"
-	_ "github.com/livehl/mirrorhub/internal/platform/docker" // 注册 Docker 平台
-	_ "github.com/livehl/mirrorhub/internal/platform/npm"    // 注册 npm 平台
-	_ "github.com/livehl/mirrorhub/internal/platform/pypi"   // 注册 PyPI 平台
+	_ "github.com/livehl/mirrorhub/internal/platform/docker"  // 注册 Docker 平台
+	_ "github.com/livehl/mirrorhub/internal/platform/goproxy" // 注册 Go modules 平台
+	_ "github.com/livehl/mirrorhub/internal/platform/npm"     // 注册 npm 平台
+	_ "github.com/livehl/mirrorhub/internal/platform/pypi"    // 注册 PyPI 平台
 	"github.com/livehl/mirrorhub/internal/ratelimit"
 	"github.com/livehl/mirrorhub/internal/router"
 	"github.com/livehl/mirrorhub/internal/scheduler"
@@ -83,6 +85,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Go sumdb supported：本地 200，引导客户端经本代理访问 checksum DB
+	if goproxyhandler.IsSumDBSupported(r.URL.Path) {
+		if pcfg, ok := cfg.Platforms["goproxy"]; ok && pcfg.Enabled {
+			switch r.Method {
+			case http.MethodGet, http.MethodHead:
+				w.WriteHeader(http.StatusOK)
+				return
+			default:
+				http.Error(w, "goproxy mirror is read-only", http.StatusMethodNotAllowed)
+				return
+			}
+		}
+	}
+
 	mr := platform.Match(r.URL.Path, cfg)
 	if mr == nil {
 		http.Error(w, "no matching rule", http.StatusNotFound)
@@ -91,8 +107,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	m := mr.Match
 	pcfg := cfg.Platforms[mr.Platform.Name()]
 
-	// npm / docker 只读代理
-	if m.Platform == "npm" || m.Platform == "docker" {
+	// npm / docker / goproxy 只读代理
+	if m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy" {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
 		default:

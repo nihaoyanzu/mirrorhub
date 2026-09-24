@@ -87,9 +87,8 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 	fetchURL := origURL
 	var size int64 = -1
 	hasSize := false
-	// npm / docker 交互冷路径跳过上游 HEAD：制品按 digest 寻址，HEAD 只会多一轮公网 RTT。
-	// 预取仍探测大小以便并行分片。
-	skipHead := (m.Platform == "npm" || m.Platform == "docker") && !prefetch
+	// npm / docker / goproxy 交互冷路径跳过上游 HEAD
+	skipHead := (m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy") && !prefetch
 	if !skipHead {
 		hs, headCT, finalURL, headErr := s.dl.Head(r.Context(), origURL, headers)
 		if headErr == nil {
