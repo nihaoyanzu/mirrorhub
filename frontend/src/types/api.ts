@@ -230,5 +230,17 @@ export interface AppConfig {
         min_size: number
       }
     }
+    huggingface?: {
+      enabled: boolean
+      upstream: string
+      file_upstream: string
+      metadata_upstream?: string
+      upstream_token?: string
+      download: {
+        concurrency: number
+        chunk_size: number
+        min_size: number
+      }
+    }
   }
 }

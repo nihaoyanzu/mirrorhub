@@ -149,6 +149,19 @@ const goproxySnippets = computed(() => [
   },
 ])
 
+const huggingfaceSnippets = computed(() => [
+  {
+    key: 'huggingfaceEnv',
+    title: t('guide.huggingfaceEnv'),
+    text: `export HF_ENDPOINT=${baseURL.value}\nexport HF_HUB_DISABLE_XET=1`,
+  },
+  {
+    key: 'huggingfaceNote',
+    title: t('guide.huggingfaceNote'),
+    text: t('guide.huggingfaceNoteBody'),
+  },
+])
+
 function syncTab() {
   const ids = enabledModules.value.map((m) => m.id)
   if (!ids.length) {
@@ -182,6 +195,7 @@ function moduleTitle(id: string) {
   if (id === 'npm') return 'npm'
   if (id === 'docker') return 'Docker'
   if (id === 'goproxy') return 'Go'
+  if (id === 'huggingface') return 'Hugging Face'
   return id
 }
 
@@ -197,6 +211,7 @@ onMounted(async () => {
         { id: 'npm', enabled: false },
         { id: 'docker', enabled: false },
         { id: 'goproxy', enabled: false },
+        { id: 'huggingface', enabled: false },
       ],
     }
   } finally {
@@ -402,6 +417,34 @@ onMounted(async () => {
                   <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
                   <button
                     v-if="item.key !== 'goproxyNote'"
+                    type="button"
+                    class="ui-btn-ghost !px-2 !py-1 text-xs"
+                    @click="copyText(item.key, item.text)"
+                  >
+                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
+                  </button>
+                </div>
+                <pre
+                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
+                >{{ item.text }}</pre>
+              </article>
+            </div>
+          </section>
+
+          <section v-else-if="activeTab === 'huggingface'" class="ui-panel overflow-hidden">
+            <div class="border-b border-line p-4 sm:p-5">
+              <p class="text-xs text-muted">{{ t('guide.huggingfaceHint') }}</p>
+            </div>
+            <div class="grid gap-3 p-4 sm:p-5">
+              <article
+                v-for="item in huggingfaceSnippets"
+                :key="item.key"
+                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
+              >
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
+                  <button
+                    v-if="item.key !== 'huggingfaceNote'"
                     type="button"
                     class="ui-btn-ghost !px-2 !py-1 text-xs"
                     @click="copyText(item.key, item.text)"

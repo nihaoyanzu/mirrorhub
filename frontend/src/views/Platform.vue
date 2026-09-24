@@ -17,7 +17,8 @@ const saving = ref(false)
 const testing = ref(false)
 const dirty = ref(false)
 const tab = ref<'access' | 'download' | 'prefetch' | 'cache'>('access')
-const moduleId = ref<'pypi' | 'npm' | 'docker' | 'goproxy'>('pypi')
+type ModuleId = 'pypi' | 'npm' | 'docker' | 'goproxy' | 'huggingface'
+const moduleId = ref<ModuleId>('pypi')
 const showClearModal = ref(false)
 const clearing = ref(false)
 const testChecks = ref<AccessTestCheck[] | null>(null)
@@ -27,6 +28,7 @@ const form = reactive({
   upstream: 'https://mirrors.aliyun.com/pypi',
   file_upstream: 'https://mirrors.aliyun.com/pypi',
   metadata_upstream: '',
+  upstream_token: '',
   concurrency: 16,
   chunk_size: 5242880,
   min_size: 102400,
@@ -56,6 +58,7 @@ const platformDrafts = reactive<Record<string, {
   upstream: string
   file_upstream: string
   metadata_upstream: string
+  upstream_token: string
   concurrency: number
   chunk_size: number
   min_size: number
@@ -66,7 +69,7 @@ const tabs = computed(() => {
     { id: 'access' as const, label: t('platform.tabAccess') },
     { id: 'download' as const, label: t('platform.tabDownload') },
   ]
-  if (moduleId.value === 'pypi' || moduleId.value === 'docker' || moduleId.value === 'goproxy') {
+  if (moduleId.value === 'pypi' || moduleId.value === 'docker' || moduleId.value === 'goproxy' || moduleId.value === 'huggingface') {
     base.push({ id: 'prefetch' as const, label: t('platform.tabPrefetch') })
   }
   base.push({ id: 'cache' as const, label: t('platform.tabCache') })
@@ -78,12 +81,14 @@ const moduleOptions = [
   { id: 'npm' as const, labelKey: 'platform.moduleNpm' },
   { id: 'docker' as const, labelKey: 'platform.moduleDocker' },
   { id: 'goproxy' as const, labelKey: 'platform.moduleGoproxy' },
+  { id: 'huggingface' as const, labelKey: 'platform.moduleHuggingFace' },
 ] as const
 
 const enableLabel = computed(() => {
   if (moduleId.value === 'npm') return t('platform.enableNpm')
   if (moduleId.value === 'docker') return t('platform.enableDocker')
   if (moduleId.value === 'goproxy') return t('platform.enableGoproxy')
+  if (moduleId.value === 'huggingface') return t('platform.enableHuggingFace')
   return t('platform.enablePyPI')
 })
 
@@ -130,9 +135,12 @@ function syncTabFromRoute() {
     tab.value = q
   }
   const mod = String(route.query.module || '')
-  if ((mod === 'pypi' || mod === 'npm' || mod === 'docker' || mod === 'goproxy') && mod !== moduleId.value) {
+  if (
+    (mod === 'pypi' || mod === 'npm' || mod === 'docker' || mod === 'goproxy' || mod === 'huggingface') &&
+    mod !== moduleId.value
+  ) {
     snapshotCurrentPlatform()
-    moduleId.value = mod as 'pypi' | 'npm' | 'docker' | 'goproxy'
+    moduleId.value = mod as ModuleId
     applyPlatformDraft(moduleId.value)
     if (mod === 'npm' && tab.value === 'prefetch') {
       tab.value = 'access'
@@ -151,25 +159,27 @@ function snapshotCurrentPlatform() {
     upstream: form.upstream,
     file_upstream: form.file_upstream,
     metadata_upstream: form.metadata_upstream,
+    upstream_token: form.upstream_token,
     concurrency: form.concurrency,
     chunk_size: form.chunk_size,
     min_size: form.min_size,
   }
 }
 
-function applyPlatformDraft(id: 'pypi' | 'npm' | 'docker' | 'goproxy') {
+function applyPlatformDraft(id: ModuleId) {
   const d = platformDrafts[id]
   if (!d) return
   form.enabled = d.enabled
   form.upstream = d.upstream
   form.file_upstream = d.file_upstream
   form.metadata_upstream = d.metadata_upstream
+  form.upstream_token = d.upstream_token || ''
   form.concurrency = d.concurrency
   form.chunk_size = d.chunk_size
   form.min_size = d.min_size
 }
 
-function setModule(id: 'pypi' | 'npm' | 'docker' | 'goproxy') {
+function setModule(id: ModuleId) {
   if (id === moduleId.value) return
   snapshotCurrentPlatform()
   moduleId.value = id
@@ -199,6 +209,7 @@ async function load() {
       upstream: pypi?.upstream || 'https://mirrors.aliyun.com/pypi',
       file_upstream: pypi?.file_upstream || 'https://mirrors.aliyun.com/pypi',
       metadata_upstream: pypi?.metadata_upstream || '',
+      upstream_token: '',
       concurrency: pypi?.download?.concurrency ?? 16,
       chunk_size: pypi?.download?.chunk_size ?? 5242880,
       min_size: pypi?.download?.min_size ?? 102400,
@@ -209,6 +220,7 @@ async function load() {
       upstream: npm?.upstream || 'https://registry.npmjs.org',
       file_upstream: npm?.file_upstream || npm?.upstream || 'https://registry.npmjs.org',
       metadata_upstream: npm?.metadata_upstream || '',
+      upstream_token: '',
       concurrency: npm?.download?.concurrency ?? 16,
       chunk_size: npm?.download?.chunk_size ?? 5242880,
       min_size: npm?.download?.min_size ?? 102400,
@@ -219,6 +231,7 @@ async function load() {
       upstream: docker?.upstream || 'https://registry-1.docker.io',
       file_upstream: docker?.file_upstream || docker?.upstream || 'https://registry-1.docker.io',
       metadata_upstream: docker?.metadata_upstream || 'https://auth.docker.io',
+      upstream_token: '',
       concurrency: docker?.download?.concurrency ?? 16,
       chunk_size: docker?.download?.chunk_size ?? 5242880,
       min_size: docker?.download?.min_size ?? 102400,
@@ -229,9 +242,21 @@ async function load() {
       upstream: goproxy?.upstream || 'https://goproxy.cn',
       file_upstream: goproxy?.file_upstream || goproxy?.upstream || 'https://goproxy.cn',
       metadata_upstream: goproxy?.metadata_upstream || goproxy?.upstream || 'https://goproxy.cn',
+      upstream_token: '',
       concurrency: goproxy?.download?.concurrency ?? 16,
       chunk_size: goproxy?.download?.chunk_size ?? 5242880,
       min_size: goproxy?.download?.min_size ?? 102400,
+    }
+    const huggingface = cfg.platforms?.huggingface
+    platformDrafts.huggingface = {
+      enabled: !!huggingface?.enabled,
+      upstream: huggingface?.upstream || 'https://hf-mirror.com',
+      file_upstream: huggingface?.file_upstream || huggingface?.upstream || 'https://hf-mirror.com',
+      metadata_upstream: '',
+      upstream_token: huggingface?.upstream_token || '',
+      concurrency: huggingface?.download?.concurrency ?? 16,
+      chunk_size: huggingface?.download?.chunk_size ?? 5242880,
+      min_size: huggingface?.download?.min_size ?? 102400,
     }
     applyPlatformDraft(moduleId.value)
 
@@ -267,10 +292,10 @@ async function save() {
   try {
     snapshotCurrentPlatform()
     const platforms: Record<string, unknown> = {}
-    for (const id of ['pypi', 'npm', 'docker', 'goproxy'] as const) {
+    for (const id of ['pypi', 'npm', 'docker', 'goproxy', 'huggingface'] as const) {
       const d = platformDrafts[id]
       if (!d) continue
-      platforms[id] = {
+      const row: Record<string, unknown> = {
         enabled: d.enabled,
         upstream: d.upstream,
         file_upstream: d.file_upstream,
@@ -281,6 +306,10 @@ async function save() {
           min_size: d.min_size,
         },
       }
+      if (id === 'huggingface') {
+        row.upstream_token = d.upstream_token || ''
+      }
+      platforms[id] = row
     }
     await api.putConfig({
       cache: {
@@ -426,6 +455,7 @@ onMounted(() => {
         <p v-if="moduleId === 'npm'" class="mb-3 text-xs text-muted">{{ t('platform.npmUpstreamHint') }}</p>
         <p v-else-if="moduleId === 'docker'" class="mb-3 text-xs text-muted">{{ t('platform.dockerUpstreamHint') }}</p>
         <p v-else-if="moduleId === 'goproxy'" class="mb-3 text-xs text-muted">{{ t('platform.goproxyUpstreamHint') }}</p>
+        <p v-else-if="moduleId === 'huggingface'" class="mb-3 text-xs text-muted">{{ t('platform.huggingfaceUpstreamHint') }}</p>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
             <label class="ui-label">{{
@@ -433,7 +463,9 @@ onMounted(() => {
                 ? t('platform.registryUpstream')
                 : moduleId === 'goproxy'
                   ? t('platform.moduleUpstream')
-                  : t('platform.indexUpstream')
+                  : moduleId === 'huggingface'
+                    ? t('platform.hubUpstream')
+                    : t('platform.indexUpstream')
             }}</label>
             <input v-model="form.upstream" class="ui-input" />
           </div>
@@ -443,7 +475,9 @@ onMounted(() => {
                 ? t('platform.blobUpstream')
                 : moduleId === 'goproxy'
                   ? t('platform.moduleFileUpstream')
-                  : t('platform.fileUpstream')
+                  : moduleId === 'huggingface'
+                    ? t('platform.hubFileUpstream')
+                    : t('platform.fileUpstream')
             }}</label>
             <input v-model="form.file_upstream" class="ui-input" />
           </div>
@@ -482,6 +516,17 @@ onMounted(() => {
               placeholder="https://goproxy.cn"
             />
             <p class="mt-1 text-xs text-muted">{{ t('platform.sumdbUpstreamHint') }}</p>
+          </div>
+          <div v-else-if="moduleId === 'huggingface'" class="sm:col-span-2">
+            <label class="ui-label">{{ t('platform.upstreamToken') }}</label>
+            <input
+              v-model="form.upstream_token"
+              type="password"
+              autocomplete="off"
+              class="ui-input"
+              :placeholder="t('platform.upstreamTokenPlaceholder')"
+            />
+            <p class="mt-1 text-xs text-muted">{{ t('platform.upstreamTokenHint') }}</p>
           </div>
         </div>
 
@@ -532,6 +577,7 @@ onMounted(() => {
       <section v-show="tab === 'prefetch'" class="ui-panel p-5">
         <p v-if="moduleId === 'npm'" class="text-sm text-muted">{{ t('platform.npmPrefetchHint') }}</p>
         <p v-else-if="moduleId === 'goproxy'" class="text-sm text-muted">{{ t('platform.goproxyPrefetchHint') }}</p>
+        <p v-else-if="moduleId === 'huggingface'" class="text-sm text-muted">{{ t('platform.huggingfacePrefetchHint') }}</p>
         <template v-else-if="moduleId === 'docker'">
           <p class="mb-4 text-sm text-muted">{{ t('platform.dockerPrefetchHint') }}</p>
           <div class="sm:col-span-3">

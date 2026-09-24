@@ -12,6 +12,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
+	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/platform"
 	"github.com/livehl/mirrorhub/internal/router"
@@ -39,6 +40,18 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 			}
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return "na", "proxy", err
+		}
+	}
+
+	// huggingface：规范 resolve URL 定键；可选服务端 Token；剥 Xet 靠下游 200 body
+	if m.Platform == "huggingface" {
+		cacheKey = "hf:pkg:" + cache.KeyFromURL(origURL)
+		injectHFAuth(headers, pypi)
+		// 若客户端带了 Linked-ETag / 已知 digest，优先内容寻址键
+		if etag := r.Header.Get("X-Linked-Etag"); etag != "" {
+			if bk := hfhandler.BlobCacheKeyFromETag(etag); bk != "" {
+				cacheKey = bk
+			}
 		}
 	}
 
@@ -88,6 +101,7 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 	var size int64 = -1
 	hasSize := false
 	// npm / docker / goproxy 交互冷路径跳过上游 HEAD
+	// huggingface 不跳过：需 Content-Length / X-Linked-Size 校验，避免慢速 CDN 截断后误缓存
 	skipHead := (m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy") && !prefetch
 	if !skipHead {
 		hs, headCT, finalURL, headErr := s.dl.Head(r.Context(), origURL, headers)

@@ -33,6 +33,19 @@ func isHTMLContentType(ct string) bool {
 	return strings.Contains(strings.ToLower(ct), "text/html")
 }
 
+// parseLinkedSize 解析 HuggingFace X-Linked-Size 头；无效返回 -1。
+func parseLinkedSize(v string) int64 {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return -1
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return -1
+	}
+	return n
+}
+
 // ServePackage 交互下载：命中缓存直接回文件；未命中则流式/并行流式并写入缓存。
 func (e *Engine) ServePackage(ctx context.Context, w http.ResponseWriter, opt Options) (cacheLabel string, err error) {
 	opt.resolveExpectedDigest()
@@ -283,6 +296,7 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 		idle = e.idleRatio()
 	}
 
+	completed := false
 	for attempt := 0; attempt < streamMaxResume; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, ct, written, err
@@ -358,8 +372,12 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 			<-watchDone
 			return nil, ct, written, fmt.Errorf("upstream returned HTML, not a package file")
 		}
-		if size < 0 && resp.ContentLength >= 0 && written == 0 {
-			size = resp.ContentLength
+		if size < 0 && written == 0 {
+			if resp.ContentLength >= 0 {
+				size = resp.ContentLength
+			} else if linked := parseLinkedSize(resp.Header.Get("X-Linked-Size")); linked >= 0 {
+				size = linked
+			}
 		}
 		if written > 0 && resp.StatusCode == http.StatusOK {
 			if _, err := io.CopyN(io.Discard, resp.Body, written); err != nil {
@@ -401,6 +419,7 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 		written += n
 
 		if copyErr == nil {
+			completed = true
 			break
 		}
 		if ctx.Err() != nil {
@@ -421,6 +440,9 @@ func (e *Engine) streamToClientAndCache(ctx context.Context, w http.ResponseWrit
 		return nil, ct, written, copyErr
 	}
 
+	if !completed {
+		return nil, ct, written, fmt.Errorf("incomplete download: got %d after %d resume attempts", written, streamMaxResume)
+	}
 	if size >= 0 && written != size {
 		return nil, ct, written, fmt.Errorf("incomplete download: got %d want %d", written, size)
 	}

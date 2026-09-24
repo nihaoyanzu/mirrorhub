@@ -20,6 +20,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/downloader"
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
+	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
@@ -344,16 +345,6 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 			parsed, skip := npmhandler.ParseLockfile(body.Text)
 			items = append(items, parsed...)
 			skipped = skip
-		case dockerhandler.LookLikeImageList(body.Text):
-			refs, skip := dockerhandler.ParseImageList(body.Text)
-			for _, ref := range refs {
-				if strings.HasPrefix(ref.Tag, "sha256:") {
-					items = append(items, ref.Repo+"@"+ref.Tag)
-				} else {
-					items = append(items, ref.Repo+":"+ref.Tag)
-				}
-			}
-			skipped = skip
 		case goproxyhandler.LookLikeGoSum(body.Text):
 			refs, skip := goproxyhandler.ParseGoSum(body.Text)
 			for _, ref := range refs {
@@ -364,6 +355,20 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 			refs, skip := goproxyhandler.ParseGoMod(body.Text)
 			for _, ref := range refs {
 				items = append(items, ref.Path+"@"+ref.Version)
+			}
+			skipped = skip
+		case hfhandler.LookLikeHFRepoList(body.Text):
+			parsed, skip := hfhandler.ParseRepoList(body.Text)
+			items = append(items, parsed...)
+			skipped = skip
+		case dockerhandler.LookLikeImageList(body.Text):
+			refs, skip := dockerhandler.ParseImageList(body.Text)
+			for _, ref := range refs {
+				if strings.HasPrefix(ref.Tag, "sha256:") {
+					items = append(items, ref.Repo+"@"+ref.Tag)
+				} else {
+					items = append(items, ref.Repo+":"+ref.Tag)
+				}
 			}
 			skipped = skip
 		default:

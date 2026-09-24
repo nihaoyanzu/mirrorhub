@@ -15,6 +15,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
+	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	"github.com/livehl/mirrorhub/internal/platform"
 	"github.com/livehl/mirrorhub/internal/router"
@@ -72,6 +73,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return "na", err
 		}
+	}
+	if m.Platform == "huggingface" {
+		injectHFAuth(headers, cfg.Platforms["huggingface"])
 	}
 
 	var staleEntry *cache.Entry
@@ -154,6 +158,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(result.Body)))
 	w.Header().Set("ETag", result.ETag)
+	stripXetFromHeader(respHeader)
 	writeProxyHeaders(w, respHeader, result.ContentType, status, "MISS", "index", boost)
 	setDockerManifestHeaders(w, m.Platform, result.Body)
 	if r.Method != http.MethodHead {
@@ -315,6 +320,9 @@ func indexContentType(platName, upstreamCT, accept string, body []byte) string {
 	}
 	if platName == "docker" {
 		return dockerhandler.DetectManifestContentType(upstreamCT, body)
+	}
+	if platName == "huggingface" {
+		return hfhandler.DetectContentType("", upstreamCT, body)
 	}
 	return platform.DetectContentType(upstreamCT, body)
 }

@@ -97,6 +97,7 @@ type PlatformConfig struct {
 	Upstream         string         `json:"upstream"`
 	FileUpstream     string         `json:"file_upstream"`
 	MetadataUpstream string         `json:"metadata_upstream"` // PEP 658；为空时回退到 file_upstream。
+	UpstreamToken    string         `json:"upstream_token,omitempty"` // 可选；HF 等回源 Bearer
 	Download         DownloadConfig `json:"download"`
 	// RateLimit 已迁到全局 Config.RateLimit；指针 + omitempty 避免零值结构体仍被编码。
 	RateLimit *RateLimitConfig `json:"rate_limit,omitempty"`
@@ -374,6 +375,14 @@ func defaultRuntime() RuntimeSettings {
 					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 				},
 			},
+			"huggingface": {
+				Enabled:      false,
+				Upstream:     "https://hf-mirror.com",
+				FileUpstream: "https://hf-mirror.com",
+				Download: DownloadConfig{
+					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+				},
+			},
 		},
 		RateLimit: RateLimitConfig{
 			BandwidthMbps: 0, MaxConcurrent: 20, MaxConnections: 80,
@@ -582,11 +591,41 @@ func applyDefaults(cfg *Config) {
 		if p.FileUpstream == "" {
 			p.FileUpstream = p.Upstream
 		}
-	if p.MetadataUpstream == "" {
-		p.MetadataUpstream = p.Upstream // sumdb 经 module 上游 /sumdb/...（如 goproxy.cn）
-	}
+		if p.MetadataUpstream == "" {
+			p.MetadataUpstream = p.Upstream // sumdb 经 module 上游 /sumdb/...（如 goproxy.cn）
+		}
 		p.RateLimit = nil
 		cfg.Platforms["goproxy"] = p
+	}
+	// 旧库无 huggingface 条目时补齐（默认关闭）
+	if _, ok := cfg.Platforms["huggingface"]; !ok {
+		cfg.Platforms["huggingface"] = PlatformConfig{
+			Enabled:      false,
+			Upstream:     "https://hf-mirror.com",
+			FileUpstream: "https://hf-mirror.com",
+			Download: DownloadConfig{
+				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+			},
+		}
+	}
+	if p, ok := cfg.Platforms["huggingface"]; ok {
+		if p.Download.Concurrency <= 0 {
+			p.Download.Concurrency = 16
+		}
+		if p.Download.ChunkSize <= 0 {
+			p.Download.ChunkSize = 5 * 1024 * 1024
+		}
+		if p.Download.MinSize <= 0 {
+			p.Download.MinSize = 100 * 1024
+		}
+		if p.Upstream == "" {
+			p.Upstream = "https://hf-mirror.com"
+		}
+		if p.FileUpstream == "" {
+			p.FileUpstream = p.Upstream
+		}
+		p.RateLimit = nil
+		cfg.Platforms["huggingface"] = p
 	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"

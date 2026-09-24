@@ -17,6 +17,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/downloader"
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
+	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/scheduler"
@@ -124,6 +125,12 @@ func platformNameForItem(item string) string {
 	if _, ok := goproxyhandler.ParseModuleRef(item); ok {
 		return "goproxy"
 	}
+	if hfhandler.IsHuggingFaceArtifactURL(item) {
+		return "huggingface"
+	}
+	if _, ok := hfhandler.ParseRepoRef(item); ok {
+		return "huggingface"
+	}
 	if _, ok := dockerhandler.ParseImageRef(item); ok {
 		return "docker"
 	}
@@ -138,6 +145,8 @@ func platformConfigForURL(cfg config.Config, rawURL string) (string, config.Plat
 		name = "docker"
 	} else if goproxyhandler.IsGoproxyArtifactURL(rawURL) {
 		name = "goproxy"
+	} else if hfhandler.IsHuggingFaceArtifactURL(rawURL) {
+		name = "huggingface"
 	}
 	pcfg, ok := cfg.Platforms[name]
 	if !ok {
@@ -150,10 +159,22 @@ func platformConfigForURL(cfg config.Config, rawURL string) (string, config.Plat
 
 func (s *Service) expandItem(ctx context.Context, item string) ([]string, error) {
 	if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
+		if u, err := url.Parse(item); err == nil && u.Path != "" {
+			if hfhandler.IsPackagePath(u.Path) || hfhandler.IsAPIPath(u.Path) {
+				return []string{item}, nil
+			}
+			if ref, ok := hfhandler.ParseRepoRef(item); ok {
+				return s.expandHuggingFaceRepo(ctx, ref)
+			}
+		}
 		return []string{item}, nil
 	}
 	if ref, ok := goproxyhandler.ParseModuleRef(item); ok {
 		return s.expandGoproxyModule(ctx, ref)
+	}
+	// HF owner/repo 与 Docker image 形似；HF 在前，避免误进 docker 展开
+	if ref, ok := hfhandler.ParseRepoRef(item); ok {
+		return s.expandHuggingFaceRepo(ctx, ref)
 	}
 	if ref, ok := dockerhandler.ParseImageRef(item); ok {
 		return s.expandDockerImage(ctx, ref)
@@ -352,6 +373,63 @@ func (s *Service) expandGoproxyModule(ctx context.Context, ref goproxyhandler.Mo
 	return []string{modURL, zipURL}, nil
 }
 
+func (s *Service) expandHuggingFaceRepo(ctx context.Context, ref hfhandler.RepoRef) ([]string, error) {
+	cfg := s.cfg.Get()
+	pcfg, ok := cfg.Platforms["huggingface"]
+	if !ok || !pcfg.Enabled {
+		return nil, fmt.Errorf("huggingface 模块未启用")
+	}
+	up := strings.TrimRight(strings.TrimSpace(pcfg.Upstream), "/")
+	if up == "" {
+		up = "https://hf-mirror.com"
+	}
+	fileUp := strings.TrimRight(strings.TrimSpace(pcfg.FileUpstream), "/")
+	if fileUp == "" {
+		fileUp = up
+	}
+	treeURL := hfhandler.TreeAPIURL(up, ref.RepoType, ref.ID, ref.Revision)
+	headers := http.Header{}
+	injectPrefetchHFAuth(headers, pcfg)
+	status, respHeader, body, getErr := s.dl.ProxyBytes(ctx, http.MethodGet, treeURL, headers, nil, "huggingface", true)
+	if getErr != nil || status < 200 || status >= 300 {
+		return nil, fmt.Errorf("hf tree %s: status=%d err=%v", treeURL, status, getErr)
+	}
+	ct := respHeader.Get("Content-Type")
+	ct = hfhandler.DetectContentType("/api/", ct, body)
+	key := "huggingface:index:" + cache.KeyFromURL(treeURL)
+	if _, err := s.cache.PutBytes(key, body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
+		SourceURL:    treeURL,
+		Kind:         "index",
+		UpstreamETag: respHeader.Get("ETag"),
+	}); err != nil && s.log != nil {
+		s.log.Warn("hf tree cache put failed", zap.String("key", key), zap.Error(err))
+	}
+	entries, err := hfhandler.ParseTreeEntries(body)
+	if err != nil {
+		return nil, fmt.Errorf("hf tree parse: %w", err)
+	}
+	files := hfhandler.FilePathsFromTree(entries)
+	urls := make([]string, 0, len(files))
+	for _, fp := range files {
+		urls = append(urls, hfhandler.ResolveFileURL(fileUp, ref.RepoType, ref.ID, ref.Revision, fp))
+	}
+	s.log.Info("prefetch huggingface resolved",
+		zap.String("repo", ref.ID),
+		zap.String("type", ref.RepoType),
+		zap.String("revision", ref.Revision),
+		zap.Int("files", len(urls)),
+	)
+	return urls, nil
+}
+
+func injectPrefetchHFAuth(headers http.Header, pcfg config.PlatformConfig) {
+	tok := strings.TrimSpace(pcfg.UpstreamToken)
+	if tok == "" {
+		return
+	}
+	headers.Set("Authorization", "Bearer "+tok)
+}
+
 func (s *Service) resolvePackageFiles(ctx context.Context, req *pypihandler.Requirement, pf config.PrefetchConfig) (files []string, metaURL string, err error) {
 	cfg := s.cfg.Get()
 	pypi := cfg.Platforms["pypi"]
@@ -548,6 +626,10 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 					headers.Set("Authorization", "Bearer "+tok)
 				}
 			}
+		}
+		if platName == "huggingface" {
+			cacheKey = "hf:pkg:" + cache.KeyFromURL(rawURL)
+			injectPrefetchHFAuth(headers, pcfg)
 		}
 		_, err := s.dl.GetOrDownload(cctx, downloader.Options{
 			URL:            rawURL,

@@ -247,5 +247,5 @@ pip ──► /simple/     索引（链接已改写到下载服务）
 | npm | ✅ | `npm config set registry http://localhost:18081/` |
 | Docker | ✅ | `registry-mirrors` → `http://localhost:18081` |
 | Go modules | ✅ | `export GOPROXY=http://localhost:18081,direct` |
-| HuggingFace | ☐ | `export HF_ENDPOINT=http://localhost:18081` |
+| HuggingFace | ✅ | `export HF_ENDPOINT=http://localhost:18081` + `HF_HUB_DISABLE_XET=1` |
 | R / CRAN | ☐ | `options(repos = c(CRAN = "http://localhost:18081/"))` |
