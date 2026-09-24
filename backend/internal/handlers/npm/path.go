@@ -26,6 +26,8 @@ func IsReservedProxyPath(path string) bool {
 		return true
 	case strings.HasPrefix(path, "/api/"):
 		return true
+	case strings.HasPrefix(path, "/v2/") || path == "/v2":
+		return true
 	default:
 		return false
 	}

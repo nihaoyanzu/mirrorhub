@@ -15,12 +15,14 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
+	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
 	"github.com/livehl/mirrorhub/internal/platform"
-	_ "github.com/livehl/mirrorhub/internal/platform/npm"  // 注册 npm 平台
-	_ "github.com/livehl/mirrorhub/internal/platform/pypi" // 注册 PyPI 平台
+	_ "github.com/livehl/mirrorhub/internal/platform/docker" // 注册 Docker 平台
+	_ "github.com/livehl/mirrorhub/internal/platform/npm"    // 注册 npm 平台
+	_ "github.com/livehl/mirrorhub/internal/platform/pypi"   // 注册 PyPI 平台
 	"github.com/livehl/mirrorhub/internal/ratelimit"
 	"github.com/livehl/mirrorhub/internal/router"
 	"github.com/livehl/mirrorhub/internal/scheduler"
@@ -46,6 +48,7 @@ type Server struct {
 	log      *zap.Logger
 
 	revalLocks sync.Map // cacheKey -> chan struct{}，per-key 续期锁防惊群
+	dockerAuth *dockerAuth
 }
 
 func New(cfg *config.Manager, c *cache.Manager, dl *downloader.Engine, sched *scheduler.Scheduler, lim *ratelimit.Registry, tr *traffic.Recorder, log *zap.Logger) *Server {
@@ -64,6 +67,22 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Get()
+
+	// Docker Registry 探活：本地应答，不回源
+	if dockerhandler.IsV2Root(r.URL.Path) {
+		if pcfg, ok := cfg.Platforms["docker"]; ok && pcfg.Enabled {
+			switch r.Method {
+			case http.MethodGet, http.MethodHead:
+				w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+				w.WriteHeader(http.StatusOK)
+				return
+			default:
+				http.Error(w, "docker mirror is read-only", http.StatusMethodNotAllowed)
+				return
+			}
+		}
+	}
+
 	mr := platform.Match(r.URL.Path, cfg)
 	if mr == nil {
 		http.Error(w, "no matching rule", http.StatusNotFound)
@@ -72,12 +91,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	m := mr.Match
 	pcfg := cfg.Platforms[mr.Platform.Name()]
 
-	// npm 只读代理：拒绝 publish 等写方法
-	if m.Platform == "npm" {
+	// npm / docker 只读代理
+	if m.Platform == "npm" || m.Platform == "docker" {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
 		default:
-			http.Error(w, "npm mirror is read-only", http.StatusMethodNotAllowed)
+			http.Error(w, m.Platform+" mirror is read-only", http.StatusMethodNotAllowed)
 			return
 		}
 	}

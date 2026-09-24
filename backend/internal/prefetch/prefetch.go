@@ -15,6 +15,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
+	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/scheduler"
@@ -22,19 +23,23 @@ import (
 
 type Service struct {
 	cfg   *config.Manager
+	cache *cache.Manager
 	dl    *downloader.Engine
 	sched *scheduler.Scheduler
 	log   *zap.Logger
 
-	mu     sync.Mutex
-	manual []string
-	cancel map[string]context.CancelFunc
-	root   context.Context
+	mu            sync.Mutex
+	manual        []string
+	cancel        map[string]context.CancelFunc
+	root          context.Context
+	dockerAuth    *dockerhandler.TokenSource
+	dockerAuthKey string // authBase|service 用于配置变更重建
 }
 
-func New(cfg *config.Manager, dl *downloader.Engine, sched *scheduler.Scheduler, log *zap.Logger) *Service {
+func New(cfg *config.Manager, c *cache.Manager, dl *downloader.Engine, sched *scheduler.Scheduler, log *zap.Logger) *Service {
 	return &Service{
 		cfg:    cfg,
+		cache:  c,
 		dl:     dl,
 		sched:  sched,
 		log:    log,
@@ -109,6 +114,12 @@ func platformNameForItem(item string) string {
 	if npmhandler.IsTarballURL(item) {
 		return "npm"
 	}
+	if dockerhandler.IsDockerBlobURL(item) {
+		return "docker"
+	}
+	if _, ok := dockerhandler.ParseImageRef(item); ok {
+		return "docker"
+	}
 	return "pypi"
 }
 
@@ -116,6 +127,8 @@ func platformConfigForURL(cfg config.Config, rawURL string) (string, config.Plat
 	name := "pypi"
 	if npmhandler.IsTarballURL(rawURL) {
 		name = "npm"
+	} else if dockerhandler.IsDockerBlobURL(rawURL) {
+		name = "docker"
 	}
 	pcfg, ok := cfg.Platforms[name]
 	if !ok {
@@ -129,6 +142,9 @@ func platformConfigForURL(cfg config.Config, rawURL string) (string, config.Plat
 func (s *Service) expandItem(ctx context.Context, item string) ([]string, error) {
 	if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
 		return []string{item}, nil
+	}
+	if ref, ok := dockerhandler.ParseImageRef(item); ok {
+		return s.expandDockerImage(ctx, ref)
 	}
 	cfg := s.cfg.Get()
 	pf := cfg.Scheduler.Prefetch
@@ -212,6 +228,65 @@ func (s *Service) expandItem(ctx context.Context, item string) ([]string, error)
 		}
 	}
 	return allURLs, nil
+}
+
+func (s *Service) expandDockerImage(ctx context.Context, ref dockerhandler.ImageRef) ([]string, error) {
+	cfg := s.cfg.Get()
+	pcfg, ok := cfg.Platforms["docker"]
+	if !ok || !pcfg.Enabled {
+		return nil, fmt.Errorf("docker 模块未启用")
+	}
+	reg := strings.TrimRight(strings.TrimSpace(pcfg.Upstream), "/")
+	if reg == "" {
+		reg = "https://registry-1.docker.io"
+	}
+	archs := dockerhandler.DefaultTargetArchs(cfg.Scheduler.Prefetch.TargetPlatformList())
+	tokens := s.dockerTokenSource(cfg)
+	blobs, manifests, err := dockerhandler.ResolveBlobURLs(ctx, nil, tokens, reg, ref, archs)
+	if err != nil {
+		return nil, err
+	}
+	variants := []string{"list", "v2", "default", "v1"}
+	for _, m := range manifests {
+		ct := m.ContentType
+		if ct == "" {
+			ct = "application/vnd.docker.distribution.manifest.v2+json"
+		}
+		for _, v := range variants {
+			key := dockerhandler.ManifestCacheKey(m.SourceURL, v)
+			if _, err := s.cache.PutBytes(key, m.Body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
+				SourceURL: m.SourceURL,
+				Kind:      "index",
+			}); err != nil && s.log != nil {
+				s.log.Warn("docker manifest cache put failed", zap.String("key", key), zap.Error(err))
+			}
+		}
+	}
+	s.log.Info("prefetch docker resolved",
+		zap.String("repo", ref.Repo),
+		zap.String("tag", ref.Tag),
+		zap.Int("manifests", len(manifests)),
+		zap.Int("blobs", len(blobs)),
+	)
+	return blobs, nil
+}
+
+func (s *Service) dockerTokenSource(cfg config.Config) *dockerhandler.TokenSource {
+	pcfg := cfg.Platforms["docker"]
+	authBase := strings.TrimSpace(pcfg.MetadataUpstream)
+	if authBase == "" {
+		authBase = "https://auth.docker.io"
+	}
+	svc := dockerhandler.AuthServiceFromRegistry(pcfg.Upstream)
+	key := authBase + "|" + svc
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dockerAuth != nil && s.dockerAuthKey == key {
+		return s.dockerAuth
+	}
+	s.dockerAuth = dockerhandler.NewTokenSource(authBase, svc, nil)
+	s.dockerAuthKey = key
+	return s.dockerAuth
 }
 
 func (s *Service) resolvePackageFiles(ctx context.Context, req *pypihandler.Requirement, pf config.PrefetchConfig) (files []string, metaURL string, err error) {
@@ -387,11 +462,34 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 		}()
 		cfg := s.cfg.Get()
 		platName, pcfg := platformConfigForURL(cfg, rawURL)
+		cacheKey := cache.KeyFromURL(rawURL)
+		headers := http.Header{}
+		expectedSHA := downloader.LookupDigest(rawURL)
 		taskID := s.sched.Begin(platName, rawURL, scheduler.PriorityPrefetch, false, false)
+		if platName == "docker" {
+			if u, err := url.Parse(rawURL); err == nil {
+				if repo, dig, ok := dockerhandler.ParseBlobPath(u.Path); ok {
+					cacheKey = dockerhandler.BlobCacheKey(dig)
+					hexDig := strings.TrimPrefix(dig, "sha256:")
+					if hexDig != "" {
+						expectedSHA = hexDig
+						downloader.RememberDigest(rawURL, hexDig)
+					}
+					tok, tokErr := s.dockerTokenSource(cfg).Bearer(cctx, repo)
+					if tokErr != nil {
+						s.sched.MarkRunning(taskID)
+						s.sched.End(taskID, tokErr)
+						s.log.Warn("prefetch docker auth failed", zap.String("url", rawURL), zap.Error(tokErr))
+						return
+					}
+					headers.Set("Authorization", "Bearer "+tok)
+				}
+			}
+		}
 		_, err := s.dl.GetOrDownload(cctx, downloader.Options{
 			URL:            rawURL,
 			SourceURL:      rawURL,
-			CacheKey:       cache.KeyFromURL(rawURL),
+			CacheKey:       cacheKey,
 			Concurrency:    pcfg.Download.Concurrency,
 			ChunkSize:      pcfg.Download.ChunkSize,
 			MinSize:        pcfg.Download.MinSize,
@@ -399,10 +497,10 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 			Platform:       platName,
 			Prefetch:       true,
 			TaskID:         taskID,
-			Headers:        http.Header{},
+			Headers:        headers,
 			ChunkTTLHours:  cfg.Cache.ChunkTTLHours,
 			Kind:           "package",
-			ExpectedSHA256: downloader.LookupDigest(rawURL),
+			ExpectedSHA256: expectedSHA,
 			OnAcquired:     func() { s.sched.MarkRunning(taskID) },
 			OnProgress:     func(done, total int64) { s.sched.UpdateProgress(taskID, done, total) },
 		})

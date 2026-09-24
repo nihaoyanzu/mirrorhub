@@ -1,0 +1,97 @@
+// Package docker 实现 Docker Hub / Registry V2 只读缓存平台。
+//
+// 范围：pull-through 缓存 + 预取 image 列表；离线依赖已缓存 manifest(STALE) 与 blob。
+// 明确后置：登录、push、私有仓库、多 registry 路由。
+package docker
+
+import (
+	"strings"
+
+	"github.com/livehl/mirrorhub/internal/config"
+	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
+	"github.com/livehl/mirrorhub/internal/platform"
+	"github.com/livehl/mirrorhub/internal/router"
+)
+
+func init() {
+	platform.Register(&DockerPlatform{})
+}
+
+// DockerPlatform 实现 platform.Platform。
+type DockerPlatform struct{}
+
+func (p *DockerPlatform) Name() string { return "docker" }
+
+func (p *DockerPlatform) Route(path string, cfg config.PlatformConfig) *router.Match {
+	return MatchDocker(path, Routes{
+		Upstream:     cfg.Upstream,
+		FileUpstream: cfg.FileUpstream,
+	})
+}
+
+// Routes 上游配置。
+type Routes struct {
+	Upstream     string
+	FileUpstream string
+}
+
+// MatchDocker 映射 /v2 路径。探活 /v2/ 由 proxy 短路，此处返回 nil。
+func MatchDocker(path string, r Routes) *router.Match {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if dockerhandler.IsV2Root(path) {
+		return nil
+	}
+	if !dockerhandler.IsRegistryPath(path) {
+		return nil
+	}
+	reg := strings.TrimRight(strings.TrimSpace(r.Upstream), "/")
+	if reg == "" {
+		reg = "https://registry-1.docker.io"
+	}
+	fileUp := strings.TrimRight(strings.TrimSpace(r.FileUpstream), "/")
+	if fileUp == "" {
+		fileUp = reg
+	}
+
+	if dockerhandler.IsBlobPath(path) {
+		return &router.Match{
+			Platform:     "docker",
+			Strategy:     router.StrategyParallel,
+			UpstreamBase: fileUp,
+			TargetURL:    fileUp + path,
+		}
+	}
+	if dockerhandler.IsManifestPath(path) {
+		return &router.Match{
+			Platform:       "docker",
+			Strategy:       router.StrategyProxy,
+			UpstreamBase:   reg,
+			TargetURL:      reg + path,
+			IsIndex:        true,
+			SmallFileBoost: true,
+		}
+	}
+	// 其它 /v2/... 只读透传为索引（少见）
+	return &router.Match{
+		Platform:       "docker",
+		Strategy:       router.StrategyProxy,
+		UpstreamBase:   reg,
+		TargetURL:      reg + path,
+		IsIndex:        true,
+		SmallFileBoost: true,
+	}
+}
+
+func (p *DockerPlatform) TransformIndex(body []byte, contentType string, cfg config.Config, accept, pageURL string) platform.IndexResult {
+	_ = cfg
+	_ = accept
+	_ = pageURL
+	ct := dockerhandler.DetectManifestContentType(contentType, body)
+	return platform.IndexResult{
+		Body:        body,
+		ETag:        dockerhandler.IndexETag(body),
+		ContentType: ct,
+	}
+}

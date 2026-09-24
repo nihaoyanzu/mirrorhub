@@ -80,7 +80,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pf := prefetch.New(cfgMgr, dl, sched, log)
+	pf := prefetch.New(cfgMgr, cacheMgr, dl, sched, log)
 	pf.Start(ctx)
 
 	authSvc, err := auth.New(cfgMgr.Store(), boot.DataDir)

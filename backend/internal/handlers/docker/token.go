@@ -1,0 +1,123 @@
+package docker
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+)
+
+// TokenSource 匿名换票（auth.docker.io），按 repository scope 短时缓存。
+type TokenSource struct {
+	client   *http.Client
+	authBase string // https://auth.docker.io
+	service  string // registry.docker.io
+	mu       sync.Mutex
+	byScope  map[string]cachedToken
+}
+
+type cachedToken struct {
+	token     string
+	expiresAt time.Time
+}
+
+// NewTokenSource 创建换票客户端；authBase/service 空则用 Docker Hub 默认。
+func NewTokenSource(authBase, service string, httpClient *http.Client) *TokenSource {
+	if strings.TrimSpace(authBase) == "" {
+		authBase = "https://auth.docker.io"
+	}
+	if strings.TrimSpace(service) == "" {
+		service = "registry.docker.io"
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	return &TokenSource{
+		client:   httpClient,
+		authBase: strings.TrimRight(authBase, "/"),
+		service:  service,
+		byScope:  map[string]cachedToken{},
+	}
+}
+
+// Invalidate 清除某 repo 的缓存 token。
+func (t *TokenSource) Invalidate(repo string) {
+	scope := "repository:" + NormalizeRepo(repo) + ":pull"
+	t.mu.Lock()
+	delete(t.byScope, scope)
+	t.mu.Unlock()
+}
+
+// Bearer 返回 Authorization 头可用的 token 字符串（不含 Bearer 前缀）。
+func (t *TokenSource) Bearer(ctx context.Context, repo string) (string, error) {
+	repo = NormalizeRepo(repo)
+	scope := "repository:" + repo + ":pull"
+	t.mu.Lock()
+	if c, ok := t.byScope[scope]; ok && time.Now().Before(c.expiresAt.Add(-30*time.Second)) {
+		tok := c.token
+		t.mu.Unlock()
+		return tok, nil
+	}
+	t.mu.Unlock()
+
+	u, err := url.Parse(t.authBase + "/token")
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("service", t.service)
+	q.Set("scope", scope)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("docker auth %s: %s", resp.Status, truncate(string(body), 200))
+	}
+	var parsed struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", err
+	}
+	tok := parsed.Token
+	if tok == "" {
+		tok = parsed.AccessToken
+	}
+	if tok == "" {
+		return "", fmt.Errorf("docker auth: empty token")
+	}
+	exp := 300
+	if parsed.ExpiresIn > 0 {
+		exp = parsed.ExpiresIn
+	}
+	t.mu.Lock()
+	t.byScope[scope] = cachedToken{token: tok, expiresAt: time.Now().Add(time.Duration(exp) * time.Second)}
+	t.mu.Unlock()
+	return tok, nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}

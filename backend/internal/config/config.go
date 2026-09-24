@@ -48,13 +48,13 @@ type ServerConfig struct {
 	PublicHost string `json:"-"`
 }
 
-	type CacheConfig struct {
-		Dir               string  `json:"dir"`
-		MaxSizeGB         float64 `json:"max_size_gb"`
-		IndexTTLSeconds   int     `json:"index_ttl_seconds"`
-		PackageTTLSeconds int     `json:"package_ttl_seconds"` // 0=永不过期（推荐；wheel/sdist 不可变）
-		ChunkTTLHours     int     `json:"chunk_ttl_hours"`
-	}
+type CacheConfig struct {
+	Dir               string  `json:"dir"`
+	MaxSizeGB         float64 `json:"max_size_gb"`
+	IndexTTLSeconds   int     `json:"index_ttl_seconds"`
+	PackageTTLSeconds int     `json:"package_ttl_seconds"` // 0=永不过期（推荐；wheel/sdist 不可变）
+	ChunkTTLHours     int     `json:"chunk_ttl_hours"`
+}
 
 type SchedulerConfig struct {
 	Prefetch       PrefetchConfig       `json:"prefetch"`
@@ -70,8 +70,8 @@ type PrefetchConfig struct {
 	TargetPython    []string `json:"target_python"`    // 目标 Python 版本列表，如 ["3.10","3.12"]
 	TargetPlatforms []string `json:"target_platforms"` // 多选：linux / linux-arm / win32 / win-arm / darwin / darwin-arm
 	TargetPlatform  string   `json:"target_platform"`  // 兼容旧单值；加载时并入 TargetPlatforms
-		MaxDepth        int      `json:"max_depth"`        // 已弃用：不再限制依赖深度，仅兼容旧配置持久化
-		MaxPackages     int      `json:"max_packages"`     // 依赖闭包包数上限（唯一刹车）
+	MaxDepth        int      `json:"max_depth"`        // 已弃用：不再限制依赖深度，仅兼容旧配置持久化
+	MaxPackages     int      `json:"max_packages"`     // 依赖闭包包数上限（唯一刹车）
 }
 
 // TargetPythonVersions 返回配置的目标 Python 版本列表；空则返回默认 ["3.10","3.11","3.12"]。
@@ -318,18 +318,18 @@ func merge(boot Bootstrap, rt RuntimeSettings) Config {
 func defaultRuntime() RuntimeSettings {
 	return RuntimeSettings{
 		UpstreamProxy: "",
-			Cache: CacheConfig{
-				MaxSizeGB:         100,
-				IndexTTLSeconds:   604800, // 7 天
-				PackageTTLSeconds: 0,       // 制品永不过期
-				ChunkTTLHours:     48,
-			},
+		Cache: CacheConfig{
+			MaxSizeGB:         100,
+			IndexTTLSeconds:   604800, // 7 天
+			PackageTTLSeconds: 0,      // 制品永不过期
+			ChunkTTLHours:     48,
+		},
 		Scheduler: SchedulerConfig{
 			Prefetch: PrefetchConfig{
-				IdleQuotaRatio: 0.3,
-				OnInteractive:  "pause",
-				ResumeOnIdle:   true,
-				ArtifactMode:   "portable",
+				IdleQuotaRatio:  0.3,
+				OnInteractive:   "pause",
+				ResumeOnIdle:    true,
+				ArtifactMode:    "portable",
 				TargetPython:    []string{"3.10", "3.11", "3.12"},
 				TargetPlatforms: []string{defaultTargetPlatform()},
 				TargetPlatform:  defaultTargetPlatform(),
@@ -356,6 +356,15 @@ func defaultRuntime() RuntimeSettings {
 					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 				},
 			},
+			"docker": {
+				Enabled:          false,
+				Upstream:         "https://registry-1.docker.io",
+				FileUpstream:     "https://registry-1.docker.io",
+				MetadataUpstream: "https://auth.docker.io",
+				Download: DownloadConfig{
+					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+				},
+			},
 		},
 		RateLimit: RateLimitConfig{
 			BandwidthMbps: 0, MaxConcurrent: 20, MaxConnections: 80,
@@ -377,16 +386,16 @@ func applyDefaults(cfg *Config) {
 	if cfg.Cache.MaxSizeGB <= 0 {
 		cfg.Cache.MaxSizeGB = 100
 	}
-		if cfg.Cache.IndexTTLSeconds <= 0 {
-			cfg.Cache.IndexTTLSeconds = 604800 // 7 天
-		}
-		// PackageTTLSeconds：0=永不过期；负值夹成 0。制品在 cache.Get 对 kind=package 亦不按 TTL 失效。
-		if cfg.Cache.PackageTTLSeconds < 0 {
-			cfg.Cache.PackageTTLSeconds = 0
-		}
-		if cfg.Cache.ChunkTTLHours <= 0 {
-			cfg.Cache.ChunkTTLHours = 48
-		}
+	if cfg.Cache.IndexTTLSeconds <= 0 {
+		cfg.Cache.IndexTTLSeconds = 604800 // 7 天
+	}
+	// PackageTTLSeconds：0=永不过期；负值夹成 0。制品在 cache.Get 对 kind=package 亦不按 TTL 失效。
+	if cfg.Cache.PackageTTLSeconds < 0 {
+		cfg.Cache.PackageTTLSeconds = 0
+	}
+	if cfg.Cache.ChunkTTLHours <= 0 {
+		cfg.Cache.ChunkTTLHours = 48
+	}
 	if cfg.Scheduler.Prefetch.IdleQuotaRatio <= 0 {
 		cfg.Scheduler.Prefetch.IdleQuotaRatio = 0.3
 	}
@@ -407,13 +416,13 @@ func applyDefaults(cfg *Config) {
 		cfg.Scheduler.Prefetch.TargetPlatforms = []string{defaultTargetPlatform()}
 		cfg.Scheduler.Prefetch.TargetPlatform = defaultTargetPlatform()
 	}
-		// max_depth 已弃用（不参与预取逻辑）；负值夹成 0 避免脏数据
-		if cfg.Scheduler.Prefetch.MaxDepth < 0 {
-			cfg.Scheduler.Prefetch.MaxDepth = 0
-		}
-		if cfg.Scheduler.Prefetch.MaxPackages <= 0 {
-			cfg.Scheduler.Prefetch.MaxPackages = 200
-		}
+	// max_depth 已弃用（不参与预取逻辑）；负值夹成 0 避免脏数据
+	if cfg.Scheduler.Prefetch.MaxDepth < 0 {
+		cfg.Scheduler.Prefetch.MaxDepth = 0
+	}
+	if cfg.Scheduler.Prefetch.MaxPackages <= 0 {
+		cfg.Scheduler.Prefetch.MaxPackages = 200
+	}
 	if cfg.Scheduler.SmallFileBoost.MaxSizeKB <= 0 {
 		cfg.Scheduler.SmallFileBoost.MaxSizeKB = 512
 	}
@@ -501,6 +510,40 @@ func applyDefaults(cfg *Config) {
 		}
 		p.RateLimit = nil
 		cfg.Platforms["npm"] = p
+	}
+	// 旧库无 docker 条目时补齐（默认关闭）
+	if _, ok := cfg.Platforms["docker"]; !ok {
+		cfg.Platforms["docker"] = PlatformConfig{
+			Enabled:          false,
+			Upstream:         "https://registry-1.docker.io",
+			FileUpstream:     "https://registry-1.docker.io",
+			MetadataUpstream: "https://auth.docker.io",
+			Download: DownloadConfig{
+				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+			},
+		}
+	}
+	if p, ok := cfg.Platforms["docker"]; ok {
+		if p.Download.Concurrency <= 0 {
+			p.Download.Concurrency = 16
+		}
+		if p.Download.ChunkSize <= 0 {
+			p.Download.ChunkSize = 5 * 1024 * 1024
+		}
+		if p.Download.MinSize <= 0 {
+			p.Download.MinSize = 100 * 1024
+		}
+		if p.Upstream == "" {
+			p.Upstream = "https://registry-1.docker.io"
+		}
+		if p.FileUpstream == "" {
+			p.FileUpstream = p.Upstream
+		}
+		if p.MetadataUpstream == "" {
+			p.MetadataUpstream = "https://auth.docker.io"
+		}
+		p.RateLimit = nil
+		cfg.Platforms["docker"] = p
 	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"

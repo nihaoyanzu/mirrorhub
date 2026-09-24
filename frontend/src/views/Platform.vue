@@ -17,7 +17,7 @@ const saving = ref(false)
 const testing = ref(false)
 const dirty = ref(false)
 const tab = ref<'access' | 'download' | 'prefetch' | 'cache'>('access')
-const moduleId = ref<'pypi' | 'npm'>('pypi')
+const moduleId = ref<'pypi' | 'npm' | 'docker'>('pypi')
 const showClearModal = ref(false)
 const clearing = ref(false)
 const testChecks = ref<AccessTestCheck[] | null>(null)
@@ -66,7 +66,7 @@ const tabs = computed(() => {
     { id: 'access' as const, label: t('platform.tabAccess') },
     { id: 'download' as const, label: t('platform.tabDownload') },
   ]
-  if (moduleId.value === 'pypi') {
+  if (moduleId.value === 'pypi' || moduleId.value === 'docker') {
     base.push({ id: 'prefetch' as const, label: t('platform.tabPrefetch') })
   }
   base.push({ id: 'cache' as const, label: t('platform.tabCache') })
@@ -76,11 +76,14 @@ const tabs = computed(() => {
 const moduleOptions = [
   { id: 'pypi' as const, labelKey: 'platform.modulePyPI' },
   { id: 'npm' as const, labelKey: 'platform.moduleNpm' },
+  { id: 'docker' as const, labelKey: 'platform.moduleDocker' },
 ] as const
 
-const enableLabel = computed(() =>
-  moduleId.value === 'npm' ? t('platform.enableNpm') : t('platform.enablePyPI'),
-)
+const enableLabel = computed(() => {
+  if (moduleId.value === 'npm') return t('platform.enableNpm')
+  if (moduleId.value === 'docker') return t('platform.enableDocker')
+  return t('platform.enablePyPI')
+})
 
 const platformOptions = [
   { id: 'linux', labelKey: 'platform.platLinux' },
@@ -125,11 +128,11 @@ function syncTabFromRoute() {
     tab.value = q
   }
   const mod = String(route.query.module || '')
-  if ((mod === 'pypi' || mod === 'npm') && mod !== moduleId.value) {
+  if ((mod === 'pypi' || mod === 'npm' || mod === 'docker') && mod !== moduleId.value) {
     snapshotCurrentPlatform()
-    moduleId.value = mod
-    applyPlatformDraft(mod)
-    if (mod === 'npm' && tab.value === 'prefetch') {
+    moduleId.value = mod as 'pypi' | 'npm' | 'docker'
+    applyPlatformDraft(moduleId.value)
+    if ((mod === 'npm') && tab.value === 'prefetch') {
       tab.value = 'access'
     }
   }
@@ -152,7 +155,7 @@ function snapshotCurrentPlatform() {
   }
 }
 
-function applyPlatformDraft(id: 'pypi' | 'npm') {
+function applyPlatformDraft(id: 'pypi' | 'npm' | 'docker') {
   const d = platformDrafts[id]
   if (!d) return
   form.enabled = d.enabled
@@ -164,7 +167,7 @@ function applyPlatformDraft(id: 'pypi' | 'npm') {
   form.min_size = d.min_size
 }
 
-function setModule(id: 'pypi' | 'npm') {
+function setModule(id: 'pypi' | 'npm' | 'docker') {
   if (id === moduleId.value) return
   snapshotCurrentPlatform()
   moduleId.value = id
@@ -208,6 +211,16 @@ async function load() {
       chunk_size: npm?.download?.chunk_size ?? 5242880,
       min_size: npm?.download?.min_size ?? 102400,
     }
+    const docker = cfg.platforms?.docker
+    platformDrafts.docker = {
+      enabled: !!docker?.enabled,
+      upstream: docker?.upstream || 'https://registry-1.docker.io',
+      file_upstream: docker?.file_upstream || docker?.upstream || 'https://registry-1.docker.io',
+      metadata_upstream: docker?.metadata_upstream || 'https://auth.docker.io',
+      concurrency: docker?.download?.concurrency ?? 16,
+      chunk_size: docker?.download?.chunk_size ?? 5242880,
+      min_size: docker?.download?.min_size ?? 102400,
+    }
     applyPlatformDraft(moduleId.value)
 
     if (cfg.cache) {
@@ -242,7 +255,7 @@ async function save() {
   try {
     snapshotCurrentPlatform()
     const platforms: Record<string, unknown> = {}
-    for (const id of ['pypi', 'npm'] as const) {
+    for (const id of ['pypi', 'npm', 'docker'] as const) {
       const d = platformDrafts[id]
       if (!d) continue
       platforms[id] = {
@@ -399,13 +412,14 @@ onMounted(() => {
 
         <h3 class="ui-section-title">{{ t('platform.sectionUpstream') }}</h3>
         <p v-if="moduleId === 'npm'" class="mb-3 text-xs text-muted">{{ t('platform.npmUpstreamHint') }}</p>
+        <p v-else-if="moduleId === 'docker'" class="mb-3 text-xs text-muted">{{ t('platform.dockerUpstreamHint') }}</p>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="ui-label">{{ t('platform.indexUpstream') }}</label>
+            <label class="ui-label">{{ moduleId === 'docker' ? t('platform.registryUpstream') : t('platform.indexUpstream') }}</label>
             <input v-model="form.upstream" class="ui-input" />
           </div>
           <div>
-            <label class="ui-label">{{ t('platform.fileUpstream') }}</label>
+            <label class="ui-label">{{ moduleId === 'docker' ? t('platform.blobUpstream') : t('platform.fileUpstream') }}</label>
             <input v-model="form.file_upstream" class="ui-input" />
           </div>
           <div v-if="moduleId === 'pypi'" class="sm:col-span-2">
@@ -425,6 +439,15 @@ onMounted(() => {
               class="ui-input"
               placeholder="PEP 658；留空回退到包文件上游"
             />
+          </div>
+          <div v-else-if="moduleId === 'docker'" class="sm:col-span-2">
+            <label class="ui-label">{{ t('platform.authUpstream') }}</label>
+            <input
+              v-model="form.metadata_upstream"
+              class="ui-input"
+              placeholder="https://auth.docker.io"
+            />
+            <p class="mt-1 text-xs text-muted">{{ t('platform.authUpstreamHint') }}</p>
           </div>
         </div>
 
@@ -474,6 +497,25 @@ onMounted(() => {
 
       <section v-show="tab === 'prefetch'" class="ui-panel p-5">
         <p v-if="moduleId === 'npm'" class="text-sm text-muted">{{ t('platform.npmPrefetchHint') }}</p>
+        <template v-else-if="moduleId === 'docker'">
+          <p class="mb-4 text-sm text-muted">{{ t('platform.dockerPrefetchHint') }}</p>
+          <div class="sm:col-span-3">
+            <label class="ui-label">{{ t('platform.targetPlatform') }}</label>
+            <p class="mb-2 text-xs text-muted">{{ t('platform.dockerArchHint') }}</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="opt in platformOptions"
+                :key="opt.id"
+                type="button"
+                class="ui-chip"
+                :class="{ 'ui-chip-active': form.target_platforms.includes(opt.id) }"
+                @click="togglePlatform(opt.id)"
+              >
+                {{ t(opt.labelKey) }}
+              </button>
+            </div>
+          </div>
+        </template>
         <div v-else class="grid gap-4 sm:grid-cols-3">
           <div>
             <label class="ui-label">{{ t('platform.artifactMode') }}</label>

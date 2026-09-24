@@ -18,6 +18,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
+	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
@@ -219,15 +220,15 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-		if err := s.auth.ChangePassword(r.Context(), user, body.OldPassword, body.NewPassword); err != nil {
-			if errors.Is(err, auth.ErrInvalidCredentials) {
-				// 用 400 而非 401，避免前端把「旧密码错误」当成会话失效并跳转登录
-				http.Error(w, "当前密码不正确", http.StatusBadRequest)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.auth.ChangePassword(r.Context(), user, body.OldPassword, body.NewPassword); err != nil {
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			// 用 400 而非 401，避免前端把「旧密码错误」当成会话失效并跳转登录
+			http.Error(w, "当前密码不正确", http.StatusBadRequest)
 			return
 		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -337,11 +338,22 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 	items := append([]string{}, body.URLs...)
 	var skipped []string
 	if strings.TrimSpace(body.Text) != "" {
-		if npmhandler.LookLikeLockfile(body.Text) {
+		switch {
+		case npmhandler.LookLikeLockfile(body.Text):
 			parsed, skip := npmhandler.ParseLockfile(body.Text)
 			items = append(items, parsed...)
 			skipped = skip
-		} else {
+		case dockerhandler.LookLikeImageList(body.Text):
+			refs, skip := dockerhandler.ParseImageList(body.Text)
+			for _, ref := range refs {
+				if strings.HasPrefix(ref.Tag, "sha256:") {
+					items = append(items, ref.Repo+"@"+ref.Tag)
+				} else {
+					items = append(items, ref.Repo+":"+ref.Tag)
+				}
+			}
+			skipped = skip
+		default:
 			parsed, skip := pypihandler.ParseDependencyText(body.Text)
 			items = append(items, parsed...)
 			skipped = skip

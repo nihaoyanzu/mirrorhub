@@ -3,6 +3,8 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"os"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
+	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	"github.com/livehl/mirrorhub/internal/platform"
 	"github.com/livehl/mirrorhub/internal/router"
@@ -29,13 +32,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 
 	cacheKey := m.Platform + ":index:" + cache.KeyFromURL(m.TargetURL)
 	clientAccept := r.Header.Get("Accept")
-	// npm：按 abbreviated / full 分键，保留客户端 Accept 回源（冷启动用小文档）
+	// npm：按 abbreviated / full 分键
 	if m.Platform == "npm" {
 		cacheKey += ":" + npmhandler.IndexCacheVariant(clientAccept)
 	}
+	// docker：按 Accept 变体分键（manifest list vs image）
+	if m.Platform == "docker" {
+		cacheKey += ":" + dockerhandler.ManifestAcceptVariant(clientAccept)
+	}
 
 	// ---------- 1. 缓存命中（未过期）→ 直接返回 ----------
-	if r.Method == http.MethodGet {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		if entry, ok := s.cache.Get(cacheKey); ok {
 			return s.serveCachedIndex(w, r, entry, plat, cfg, boost, "HIT")
 		}
@@ -53,38 +60,54 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 			headers.Set("Accept", "application/json")
 		}
 	}
+	if m.Platform == "docker" {
+		if strings.TrimSpace(headers.Get("Accept")) == "" {
+			headers.Set("Accept", dockerhandler.DefaultManifestAccept())
+		}
+		if err := s.injectDockerAuth(r, headers, cfg, r.URL.Path); err != nil {
+			// 换票失败：尽量 STALE
+			if stale, ok := s.cache.GetStale(cacheKey); ok {
+				return s.serveCachedIndex(w, r, stale, plat, cfg, boost, "STALE")
+			}
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return "na", err
+		}
+	}
 
 	var staleEntry *cache.Entry
-	if r.Method == http.MethodGet {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		if stale, ok := s.cache.GetStale(cacheKey); ok {
 			staleEntry = stale
-			result := s.doRevalidation(cacheKey, m.TargetURL, m.Platform, stale, headers, cfg.Cache.IndexTTLSeconds)
-			<-result.done
-			if result.entry != nil && len(result.body) > 0 {
-				// 续期成功 → 用旧内容响应
-				return s.serveRevalidated(w, r, result, plat, cfg, boost)
-			}
-			// 续期拿到了新正文：写入缓存后按 MISS 响应，避免再打一次上游
-			if len(result.body) > 0 && result.contentType != "" {
-				body := result.body
-				body, _ = platform.MaybeGunzip(body)
-				ct := indexContentType(m.Platform, result.contentType, clientAccept, body)
-				if _, err := s.cache.PutBytes(cacheKey, body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
-					SourceURL:    m.TargetURL,
-					Kind:         "index",
-					UpstreamETag: result.upstreamETag,
-				}); err != nil && s.log != nil {
-					s.log.Warn("index cache put failed", zap.String("key", cacheKey), zap.Error(err))
+			if r.Method == http.MethodGet {
+				result := s.doRevalidation(cacheKey, m.TargetURL, m.Platform, stale, headers, cfg.Cache.IndexTTLSeconds)
+				<-result.done
+				if result.entry != nil && len(result.body) > 0 {
+					// 续期成功 → 用旧内容响应
+					return s.serveRevalidated(w, r, result, plat, cfg, boost)
 				}
-				rememberIndexDigests(body, m.TargetURL)
-				tr := plat.TransformIndex(body, ct, cfg, clientAccept, m.TargetURL)
-				w.Header().Set("Content-Length", strconv.Itoa(len(tr.Body)))
-				w.Header().Set("ETag", tr.ETag)
-				writeProxyHeaders(w, http.Header{}, tr.ContentType, http.StatusOK, "MISS", "index", boost)
-				_, _ = w.Write(tr.Body)
-				return "miss", nil
+				// 续期拿到了新正文：写入缓存后按 MISS 响应，避免再打一次上游
+				if len(result.body) > 0 && result.contentType != "" {
+					body := result.body
+					body, _ = platform.MaybeGunzip(body)
+					ct := indexContentType(m.Platform, result.contentType, clientAccept, body)
+					if _, err := s.cache.PutBytes(cacheKey, body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
+						SourceURL:    m.TargetURL,
+						Kind:         "index",
+						UpstreamETag: result.upstreamETag,
+					}); err != nil && s.log != nil {
+						s.log.Warn("index cache put failed", zap.String("key", cacheKey), zap.Error(err))
+					}
+					rememberIndexDigests(body, m.TargetURL)
+					tr := plat.TransformIndex(body, ct, cfg, clientAccept, m.TargetURL)
+					w.Header().Set("Content-Length", strconv.Itoa(len(tr.Body)))
+					w.Header().Set("ETag", tr.ETag)
+					setDockerManifestHeaders(w, m.Platform, tr.Body)
+					writeProxyHeaders(w, http.Header{}, tr.ContentType, http.StatusOK, "MISS", "index", boost)
+					_, _ = w.Write(tr.Body)
+					return "miss", nil
+				}
 			}
-			// 续期失败 → 直接回退过期缓存（不依赖后续全量 GET）
+			// 续期失败 / HEAD → 直接回退过期缓存（不依赖后续全量 GET）
 			return s.serveCachedIndex(w, r, stale, plat, cfg, boost, "STALE")
 		}
 	}
@@ -92,7 +115,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	// ---------- 3. 全量 GET（无本地条目时）----------
 	status, respHeader, body, getErr := s.dl.ProxyBytes(r.Context(), r.Method, m.TargetURL, headers, r.Body, m.Platform, prefetch)
 	if getErr != nil {
-		if r.Method == http.MethodGet {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			if staleEntry == nil {
 				if stale, ok := s.cache.GetStale(cacheKey); ok {
 					staleEntry = stale
@@ -101,6 +124,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 			if staleEntry != nil {
 				return s.serveCachedIndex(w, r, staleEntry, plat, cfg, boost, "STALE")
 			}
+		}
+		// docker 401：清票后仍失败则原样返回
+		if m.Platform == "docker" && statusSuggestsAuth(getErr) {
+			s.invalidateDockerAuth(cfg, r.URL.Path)
 		}
 		http.Error(w, getErr.Error(), http.StatusBadGateway)
 		return "miss", getErr
@@ -127,8 +154,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(result.Body)))
 	w.Header().Set("ETag", result.ETag)
+	setDockerManifestHeaders(w, m.Platform, result.Body)
 	writeProxyHeaders(w, respHeader, result.ContentType, status, "MISS", "index", boost)
-	_, _ = w.Write(result.Body)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(result.Body)
+	}
 	return "miss", nil
 }
 
@@ -231,10 +261,13 @@ func (s *Server) serveRevalidated(w http.ResponseWriter, r *http.Request, result
 	w.Header().Set("ETag", tr.ETag)
 	w.Header().Set("X-Cache", "REVALIDATED")
 	w.Header().Set("X-Mirrorhub-Strategy", "index")
+	setDockerManifestHeaders(w, plat.Name(), tr.Body)
 	if boost {
 		w.Header().Set("X-Mirrorhub-Boost", "1")
 	}
-	_, _ = w.Write(tr.Body)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(tr.Body)
+	}
 	return "hit", nil
 }
 
@@ -265,10 +298,13 @@ func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry 
 	w.Header().Set("ETag", tr.ETag)
 	w.Header().Set("X-Cache", cacheLabel)
 	w.Header().Set("X-Mirrorhub-Strategy", "index")
+	setDockerManifestHeaders(w, plat.Name(), tr.Body)
 	if boost {
 		w.Header().Set("X-Mirrorhub-Boost", "1")
 	}
-	_, _ = w.Write(tr.Body)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(tr.Body)
+	}
 	return "hit", nil
 }
 
@@ -277,5 +313,30 @@ func indexContentType(platName, upstreamCT, accept string, body []byte) string {
 	if platName == "npm" {
 		return npmhandler.DetectJSONContentType(upstreamCT, accept, body)
 	}
+	if platName == "docker" {
+		return dockerhandler.DetectManifestContentType(upstreamCT, body)
+	}
 	return platform.DetectContentType(upstreamCT, body)
+}
+
+func setDockerManifestHeaders(w http.ResponseWriter, platName string, body []byte) {
+	if platName != "docker" {
+		return
+	}
+	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+	if len(body) == 0 {
+		return
+	}
+	// 覆盖上游透传，避免重复 Digest 头
+	w.Header().Del("Docker-Content-Digest")
+	sum := sha256.Sum256(body)
+	w.Header().Set("Docker-Content-Digest", "sha256:"+hex.EncodeToString(sum[:]))
+}
+
+func statusSuggestsAuth(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "401") || strings.Contains(msg, "unauthorized")
 }

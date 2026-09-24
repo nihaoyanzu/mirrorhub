@@ -208,5 +208,16 @@ export interface AppConfig {
         min_size: number
       }
     }
+    docker?: {
+      enabled: boolean
+      upstream: string
+      file_upstream: string
+      metadata_upstream?: string
+      download: {
+        concurrency: number
+        chunk_size: number
+        min_size: number
+      }
+    }
   }
 }
