@@ -1,0 +1,46 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import GuideSnippetList from './GuideSnippetList.vue'
+import type { GuideSnippet } from './types'
+
+const props = defineProps<{
+  baseURL: string
+  copied: string
+}>()
+
+const emit = defineEmits<{
+  copy: [key: string, text: string]
+}>()
+
+const { t } = useI18n()
+
+const snippets = computed<GuideSnippet[]>(() => [
+  {
+    key: 'huggingfaceEnv',
+    title: t('guide.huggingfaceEnv'),
+    text: `export HF_ENDPOINT=${props.baseURL}\nexport HF_HUB_DISABLE_XET=1`,
+  },
+  {
+    key: 'huggingfaceNote',
+    title: t('guide.huggingfaceNote'),
+    text: t('guide.huggingfaceNoteBody'),
+    hideCopy: true,
+  },
+])
+</script>
+
+<template>
+  <section class="ui-panel overflow-hidden">
+    <div class="border-b border-line p-4 sm:p-5">
+      <p class="text-xs text-muted">{{ t('guide.huggingfaceHint') }}</p>
+    </div>
+    <GuideSnippetList
+      :snippets="snippets"
+      :copied="copied"
+      :copy-label="t('guide.copy')"
+      :copied-label="t('guide.copied')"
+      @copy="(k, text) => emit('copy', k, text)"
+    />
+  </section>
+</template>

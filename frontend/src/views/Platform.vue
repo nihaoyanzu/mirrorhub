@@ -6,7 +6,8 @@ import PageHeader from '@/components/PageHeader.vue'
 import ModalDialog from '@/components/ModalDialog.vue'
 import { api } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
-import type { AccessTestCheck, AppConfig } from '@/types/api'
+import type { AccessTestCheck, AppConfig, PlatformConfig } from '@/types/api'
+import { isKnownModule, MODULE_BY_ID, MODULES } from '@/modules/registry'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -17,17 +18,16 @@ const saving = ref(false)
 const testing = ref(false)
 const dirty = ref(false)
 const tab = ref<'access' | 'download' | 'prefetch' | 'cache'>('access')
-type ModuleId = 'pypi' | 'npm' | 'docker' | 'goproxy' | 'huggingface' | 'maven'
-const moduleId = ref<ModuleId>('pypi')
+const moduleId = ref(MODULES[0].id)
 const showClearModal = ref(false)
 const clearing = ref(false)
 const testChecks = ref<AccessTestCheck[] | null>(null)
 
 const form = reactive({
   enabled: true,
-  upstream: 'https://mirrors.aliyun.com/pypi',
-  file_upstream: 'https://mirrors.aliyun.com/pypi',
-  metadata_upstream: '',
+  upstream: MODULES[0].defaults.upstream,
+  file_upstream: MODULES[0].defaults.file_upstream,
+  metadata_upstream: MODULES[0].defaults.metadata_upstream || '',
   upstream_token: '',
   concurrency: 16,
   chunk_size: 5242880,
@@ -52,8 +52,7 @@ const systemNet = reactive({
   upstream_proxy: '',
 })
 
-/** 切换模块时暂存各平台表单，避免丢失未保存编辑以外的已加载值 */
-const platformDrafts = reactive<Record<string, {
+type PlatformDraft = {
   enabled: boolean
   upstream: string
   file_upstream: string
@@ -62,37 +61,31 @@ const platformDrafts = reactive<Record<string, {
   concurrency: number
   chunk_size: number
   min_size: number
-}>>({})
+}
+
+/** 切换模块时暂存各平台表单，避免丢失未保存编辑以外的已加载值 */
+const platformDrafts = reactive<Record<string, PlatformDraft>>({})
+
+const currentDesc = computed(() => MODULE_BY_ID[moduleId.value] || MODULES[0])
 
 const tabs = computed(() => {
-  const base = [
-    { id: 'access' as const, label: t('platform.tabAccess') },
-    { id: 'download' as const, label: t('platform.tabDownload') },
+  const base: { id: 'access' | 'download' | 'prefetch' | 'cache'; label: string }[] = [
+    { id: 'access', label: t('platform.tabAccess') },
+    { id: 'download', label: t('platform.tabDownload') },
   ]
-  if (moduleId.value === 'pypi' || moduleId.value === 'docker' || moduleId.value === 'goproxy' || moduleId.value === 'huggingface' || moduleId.value === 'maven') {
-    base.push({ id: 'prefetch' as const, label: t('platform.tabPrefetch') })
+  if (currentDesc.value.showPrefetchTab) {
+    base.push({ id: 'prefetch', label: t('platform.tabPrefetch') })
   }
-  base.push({ id: 'cache' as const, label: t('platform.tabCache') })
+  base.push({ id: 'cache', label: t('platform.tabCache') })
   return base
 })
 
-const moduleOptions = [
-  { id: 'pypi' as const, labelKey: 'platform.modulePyPI' },
-  { id: 'npm' as const, labelKey: 'platform.moduleNpm' },
-  { id: 'docker' as const, labelKey: 'platform.moduleDocker' },
-  { id: 'goproxy' as const, labelKey: 'platform.moduleGoproxy' },
-  { id: 'huggingface' as const, labelKey: 'platform.moduleHuggingFace' },
-  { id: 'maven' as const, labelKey: 'platform.moduleMaven' },
-] as const
+const moduleOptions = MODULES.map((d) => ({ id: d.id, labelKey: d.labelKey }))
 
-const enableLabel = computed(() => {
-  if (moduleId.value === 'npm') return t('platform.enableNpm')
-  if (moduleId.value === 'docker') return t('platform.enableDocker')
-  if (moduleId.value === 'goproxy') return t('platform.enableGoproxy')
-  if (moduleId.value === 'huggingface') return t('platform.enableHuggingFace')
-  if (moduleId.value === 'maven') return t('platform.enableMaven')
-  return t('platform.enablePyPI')
-})
+const enableLabel = computed(() => t(currentDesc.value.enableLabelKey))
+
+const thirdField = computed(() => currentDesc.value.fields.thirdField)
+const prefetchUI = computed(() => currentDesc.value.prefetchUI)
 
 const platformOptions = [
   { id: 'linux', labelKey: 'platform.platLinux' },
@@ -129,6 +122,12 @@ function togglePlatform(id: string) {
   markDirty()
 }
 
+function leavePrefetchIfHidden() {
+  if (!currentDesc.value.showPrefetchTab && tab.value === 'prefetch') {
+    tab.value = 'access'
+  }
+}
+
 function syncTabFromRoute() {
   const q = String(route.query.tab || '')
   if (q === 'rate') {
@@ -137,16 +136,11 @@ function syncTabFromRoute() {
     tab.value = q
   }
   const mod = String(route.query.module || '')
-  if (
-    (mod === 'pypi' || mod === 'npm' || mod === 'docker' || mod === 'goproxy' || mod === 'huggingface' || mod === 'maven') &&
-    mod !== moduleId.value
-  ) {
+  if (isKnownModule(mod) && mod !== moduleId.value) {
     snapshotCurrentPlatform()
-    moduleId.value = mod as ModuleId
+    moduleId.value = mod
     applyPlatformDraft(moduleId.value)
-    if (mod === 'npm' && tab.value === 'prefetch') {
-      tab.value = 'access'
-    }
+    leavePrefetchIfHidden()
   }
 }
 
@@ -168,7 +162,7 @@ function snapshotCurrentPlatform() {
   }
 }
 
-function applyPlatformDraft(id: ModuleId) {
+function applyPlatformDraft(id: string) {
   const d = platformDrafts[id]
   if (!d) return
   form.enabled = d.enabled
@@ -181,14 +175,12 @@ function applyPlatformDraft(id: ModuleId) {
   form.min_size = d.min_size
 }
 
-function setModule(id: ModuleId) {
-  if (id === moduleId.value) return
+function setModule(id: string) {
+  if (id === moduleId.value || !isKnownModule(id)) return
   snapshotCurrentPlatform()
   moduleId.value = id
   applyPlatformDraft(id)
-  if (id === 'npm' && tab.value === 'prefetch') {
-    tab.value = 'access'
-  }
+  leavePrefetchIfHidden()
   router.replace({ query: { ...route.query, module: id, tab: tab.value } })
 }
 
@@ -199,77 +191,31 @@ function markDirty() {
   dirty.value = true
 }
 
+function draftFromConfig(cfg: PlatformConfig | undefined, defaults: (typeof MODULES)[0]['defaults'], persistToken: boolean): PlatformDraft {
+  return {
+    enabled: !!cfg?.enabled,
+    upstream: cfg?.upstream || defaults.upstream,
+    file_upstream: cfg?.file_upstream || cfg?.upstream || defaults.file_upstream,
+    metadata_upstream: cfg?.metadata_upstream || defaults.metadata_upstream || '',
+    upstream_token: persistToken ? cfg?.upstream_token || '' : '',
+    concurrency: cfg?.download?.concurrency ?? 16,
+    chunk_size: cfg?.download?.chunk_size ?? 5242880,
+    min_size: cfg?.download?.min_size ?? 102400,
+  }
+}
+
 async function load() {
   loading.value = true
   try {
     const cfg: AppConfig = await api.getConfig()
     systemNet.upstream_proxy = cfg.server?.upstream_proxy || ''
 
-    const pypi = cfg.platforms?.pypi
-    platformDrafts.pypi = {
-      enabled: !!pypi?.enabled,
-      upstream: pypi?.upstream || 'https://mirrors.aliyun.com/pypi',
-      file_upstream: pypi?.file_upstream || 'https://mirrors.aliyun.com/pypi',
-      metadata_upstream: pypi?.metadata_upstream || '',
-      upstream_token: '',
-      concurrency: pypi?.download?.concurrency ?? 16,
-      chunk_size: pypi?.download?.chunk_size ?? 5242880,
-      min_size: pypi?.download?.min_size ?? 102400,
-    }
-    const npm = cfg.platforms?.npm
-    platformDrafts.npm = {
-      enabled: !!npm?.enabled,
-      upstream: npm?.upstream || 'https://registry.npmmirror.com',
-      file_upstream: npm?.file_upstream || npm?.upstream || 'https://registry.npmmirror.com',
-      metadata_upstream: npm?.metadata_upstream || '',
-      upstream_token: '',
-      concurrency: npm?.download?.concurrency ?? 16,
-      chunk_size: npm?.download?.chunk_size ?? 5242880,
-      min_size: npm?.download?.min_size ?? 102400,
-    }
-    const docker = cfg.platforms?.docker
-    platformDrafts.docker = {
-      enabled: !!docker?.enabled,
-      upstream: docker?.upstream || 'https://registry-1.docker.io',
-      file_upstream: docker?.file_upstream || docker?.upstream || 'https://registry-1.docker.io',
-      metadata_upstream: docker?.metadata_upstream || 'https://auth.docker.io',
-      upstream_token: '',
-      concurrency: docker?.download?.concurrency ?? 16,
-      chunk_size: docker?.download?.chunk_size ?? 5242880,
-      min_size: docker?.download?.min_size ?? 102400,
-    }
-    const goproxy = cfg.platforms?.goproxy
-    platformDrafts.goproxy = {
-      enabled: !!goproxy?.enabled,
-      upstream: goproxy?.upstream || 'https://goproxy.cn',
-      file_upstream: goproxy?.file_upstream || goproxy?.upstream || 'https://goproxy.cn',
-      metadata_upstream: goproxy?.metadata_upstream || goproxy?.upstream || 'https://goproxy.cn',
-      upstream_token: '',
-      concurrency: goproxy?.download?.concurrency ?? 16,
-      chunk_size: goproxy?.download?.chunk_size ?? 5242880,
-      min_size: goproxy?.download?.min_size ?? 102400,
-    }
-    const huggingface = cfg.platforms?.huggingface
-    platformDrafts.huggingface = {
-      enabled: !!huggingface?.enabled,
-      upstream: huggingface?.upstream || 'https://huggingface.co',
-      file_upstream: huggingface?.file_upstream || huggingface?.upstream || 'https://huggingface.co',
-      metadata_upstream: '',
-      upstream_token: huggingface?.upstream_token || '',
-      concurrency: huggingface?.download?.concurrency ?? 16,
-      chunk_size: huggingface?.download?.chunk_size ?? 5242880,
-      min_size: huggingface?.download?.min_size ?? 102400,
-    }
-    const maven = cfg.platforms?.maven
-    platformDrafts.maven = {
-      enabled: !!maven?.enabled,
-      upstream: maven?.upstream || 'https://maven.aliyun.com/repository/central',
-      file_upstream: maven?.file_upstream || maven?.upstream || 'https://maven.aliyun.com/repository/central',
-      metadata_upstream: '',
-      upstream_token: '',
-      concurrency: maven?.download?.concurrency ?? 16,
-      chunk_size: maven?.download?.chunk_size ?? 5242880,
-      min_size: maven?.download?.min_size ?? 102400,
+    for (const d of MODULES) {
+      platformDrafts[d.id] = draftFromConfig(
+        cfg.platforms?.[d.id],
+        d.defaults,
+        d.fields.persistUpstreamToken,
+      )
     }
     applyPlatformDraft(moduleId.value)
 
@@ -304,11 +250,11 @@ async function save() {
   saving.value = true
   try {
     snapshotCurrentPlatform()
-    const platforms: Record<string, unknown> = {}
-    for (const id of ['pypi', 'npm', 'docker', 'goproxy', 'huggingface', 'maven'] as const) {
-      const d = platformDrafts[id]
+    const platforms: Record<string, PlatformConfig> = {}
+    for (const desc of MODULES) {
+      const d = platformDrafts[desc.id]
       if (!d) continue
-      const row: Record<string, unknown> = {
+      const row: PlatformConfig = {
         enabled: d.enabled,
         upstream: d.upstream,
         file_upstream: d.file_upstream,
@@ -319,10 +265,10 @@ async function save() {
           min_size: d.min_size,
         },
       }
-      if (id === 'huggingface') {
+      if (desc.fields.persistUpstreamToken) {
         row.upstream_token = d.upstream_token || ''
       }
-      platforms[id] = row
+      platforms[desc.id] = row
     }
     await api.putConfig({
       cache: {
@@ -465,78 +411,55 @@ onMounted(() => {
         </div>
 
         <h3 class="ui-section-title">{{ t('platform.sectionUpstream') }}</h3>
-        <p v-if="moduleId === 'npm'" class="mb-3 text-xs text-muted">{{ t('platform.npmUpstreamHint') }}</p>
-        <p v-else-if="moduleId === 'docker'" class="mb-3 text-xs text-muted">{{ t('platform.dockerUpstreamHint') }}</p>
-        <p v-else-if="moduleId === 'goproxy'" class="mb-3 text-xs text-muted">{{ t('platform.goproxyUpstreamHint') }}</p>
-        <p v-else-if="moduleId === 'huggingface'" class="mb-3 text-xs text-muted">{{ t('platform.huggingfaceUpstreamHint') }}</p>
-        <p v-else-if="moduleId === 'maven'" class="mb-3 text-xs text-muted">{{ t('platform.mavenUpstreamHint') }}</p>
+        <p v-if="currentDesc.hints.upstreamHintKey" class="mb-3 text-xs text-muted">
+          {{ t(currentDesc.hints.upstreamHintKey) }}
+        </p>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="ui-label">{{
-              moduleId === 'docker'
-                ? t('platform.registryUpstream')
-                : moduleId === 'goproxy'
-                  ? t('platform.moduleUpstream')
-                  : moduleId === 'huggingface'
-                    ? t('platform.hubUpstream')
-                    : moduleId === 'maven'
-                      ? t('platform.mavenRepoUpstream')
-                      : t('platform.indexUpstream')
-            }}</label>
+            <label class="ui-label">{{ t(currentDesc.labels.upstreamKey) }}</label>
             <input v-model="form.upstream" class="ui-input" />
           </div>
           <div>
-            <label class="ui-label">{{
-              moduleId === 'docker'
-                ? t('platform.blobUpstream')
-                : moduleId === 'goproxy'
-                  ? t('platform.moduleFileUpstream')
-                  : moduleId === 'huggingface'
-                    ? t('platform.hubFileUpstream')
-                    : moduleId === 'maven'
-                      ? t('platform.mavenFileUpstream')
-                      : t('platform.fileUpstream')
-            }}</label>
+            <label class="ui-label">{{ t(currentDesc.labels.fileUpstreamKey) }}</label>
             <input v-model="form.file_upstream" class="ui-input" />
           </div>
-          <div v-if="moduleId === 'pypi'" class="sm:col-span-2">
+
+          <div v-if="thirdField === 'metadata'" class="sm:col-span-2">
             <label class="ui-label">
-              {{ t('platform.metadataUpstream') }}
-              <span class="group relative ml-1 inline-flex cursor-help items-center">
+              {{ t(currentDesc.labels.thirdFieldKey || 'platform.metadataUpstream') }}
+              <span
+                v-if="currentDesc.hints.thirdFieldHintKey"
+                class="group relative ml-1 inline-flex cursor-help items-center"
+              >
                 <svg class="h-3.5 w-3.5 text-muted/60" viewBox="0 0 20 20" fill="currentColor">
                   <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
                 </svg>
                 <span class="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-lg border border-line bg-panel px-3 py-2 text-xs text-muted opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
-                  {{ t('platform.metadataHint') }}
+                  {{ t(currentDesc.hints.thirdFieldHintKey) }}
                 </span>
               </span>
             </label>
             <input
               v-model="form.metadata_upstream"
               class="ui-input"
-              placeholder="PEP 658；留空回退到包文件上游"
+              :placeholder="currentDesc.hints.thirdFieldPlaceholder || ''"
             />
           </div>
-          <div v-else-if="moduleId === 'docker'" class="sm:col-span-2">
-            <label class="ui-label">{{ t('platform.authUpstream') }}</label>
+
+          <div v-else-if="thirdField === 'auth' || thirdField === 'sumdb'" class="sm:col-span-2">
+            <label class="ui-label">{{ t(currentDesc.labels.thirdFieldKey || '') }}</label>
             <input
               v-model="form.metadata_upstream"
               class="ui-input"
-              placeholder="https://auth.docker.io"
+              :placeholder="currentDesc.hints.thirdFieldPlaceholder || ''"
             />
-            <p class="mt-1 text-xs text-muted">{{ t('platform.authUpstreamHint') }}</p>
+            <p v-if="currentDesc.hints.thirdFieldHintKey" class="mt-1 text-xs text-muted">
+              {{ t(currentDesc.hints.thirdFieldHintKey) }}
+            </p>
           </div>
-          <div v-else-if="moduleId === 'goproxy'" class="sm:col-span-2">
-            <label class="ui-label">{{ t('platform.sumdbUpstream') }}</label>
-            <input
-              v-model="form.metadata_upstream"
-              class="ui-input"
-              placeholder="https://goproxy.cn"
-            />
-            <p class="mt-1 text-xs text-muted">{{ t('platform.sumdbUpstreamHint') }}</p>
-          </div>
-          <div v-else-if="moduleId === 'huggingface'" class="sm:col-span-2">
-            <label class="ui-label">{{ t('platform.upstreamToken') }}</label>
+
+          <div v-else-if="thirdField === 'token'" class="sm:col-span-2">
+            <label class="ui-label">{{ t(currentDesc.labels.thirdFieldKey || 'platform.upstreamToken') }}</label>
             <input
               v-model="form.upstream_token"
               type="password"
@@ -544,17 +467,22 @@ onMounted(() => {
               class="ui-input"
               :placeholder="t('platform.upstreamTokenPlaceholder')"
             />
-            <p class="mt-1 text-xs text-muted">{{ t('platform.upstreamTokenHint') }}</p>
+            <p v-if="currentDesc.hints.thirdFieldHintKey" class="mt-1 text-xs text-muted">
+              {{ t(currentDesc.hints.thirdFieldHintKey) }}
+            </p>
           </div>
         </div>
 
-        <div v-if="moduleId === 'pypi'" class="mt-5 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+        <div
+          v-if="currentDesc.fields.showAccessTest"
+          class="mt-5 flex flex-wrap items-center gap-3 border-t border-line pt-4"
+        >
           <button type="button" class="ui-btn" :disabled="loading || testing" @click.stop="testAccess">
             {{ testing ? t('platform.testing') : t('platform.testAccess') }}
           </button>
         </div>
 
-        <ul v-if="moduleId === 'pypi' && testChecks?.length" class="mt-4 space-y-2">
+        <ul v-if="currentDesc.fields.showAccessTest && testChecks?.length" class="mt-4 space-y-2">
           <li v-for="(c, i) in testChecks" :key="i" class="rounded-lg border border-line px-3 py-2 text-sm">
             <div class="flex flex-wrap items-center gap-2">
               <span
@@ -593,12 +521,13 @@ onMounted(() => {
       </section>
 
       <section v-show="tab === 'prefetch'" class="ui-panel p-5">
-        <p v-if="moduleId === 'npm'" class="text-sm text-muted">{{ t('platform.npmPrefetchHint') }}</p>
-        <p v-else-if="moduleId === 'goproxy'" class="text-sm text-muted">{{ t('platform.goproxyPrefetchHint') }}</p>
-        <p v-else-if="moduleId === 'huggingface'" class="text-sm text-muted">{{ t('platform.huggingfacePrefetchHint') }}</p>
-        <p v-else-if="moduleId === 'maven'" class="text-sm text-muted">{{ t('platform.mavenPrefetchHint') }}</p>
-        <template v-else-if="moduleId === 'docker'">
-          <p class="mb-4 text-sm text-muted">{{ t('platform.dockerPrefetchHint') }}</p>
+        <p v-if="prefetchUI === 'hint' && currentDesc.hints.prefetchHintKey" class="text-sm text-muted">
+          {{ t(currentDesc.hints.prefetchHintKey) }}
+        </p>
+        <template v-else-if="prefetchUI === 'arch'">
+          <p v-if="currentDesc.hints.prefetchHintKey" class="mb-4 text-sm text-muted">
+            {{ t(currentDesc.hints.prefetchHintKey) }}
+          </p>
           <div class="sm:col-span-3">
             <label class="ui-label">{{ t('platform.targetPlatform') }}</label>
             <p class="mb-2 text-xs text-muted">{{ t('platform.dockerArchHint') }}</p>
@@ -616,7 +545,7 @@ onMounted(() => {
             </div>
           </div>
         </template>
-        <div v-else class="grid gap-4 sm:grid-cols-3">
+        <div v-else-if="prefetchUI === 'pypiWheel'" class="grid gap-4 sm:grid-cols-3">
           <div>
             <label class="ui-label">{{ t('platform.artifactMode') }}</label>
             <select v-model="form.artifact_mode" class="ui-input">

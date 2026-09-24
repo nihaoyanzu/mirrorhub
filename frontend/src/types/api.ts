@@ -185,73 +185,18 @@ export interface AppConfig {
       max_size_kb: number
     }
   }
-  platforms: {
-    pypi: {
-      enabled: boolean
-      upstream: string
-      file_upstream: string
-      metadata_upstream: string
-      download: {
-        concurrency: number
-        chunk_size: number
-        min_size: number
-      }
-    }
-    npm?: {
-      enabled: boolean
-      upstream: string
-      file_upstream: string
-      metadata_upstream?: string
-      download: {
-        concurrency: number
-        chunk_size: number
-        min_size: number
-      }
-    }
-    docker?: {
-      enabled: boolean
-      upstream: string
-      file_upstream: string
-      metadata_upstream?: string
-      download: {
-        concurrency: number
-        chunk_size: number
-        min_size: number
-      }
-    }
-    goproxy?: {
-      enabled: boolean
-      upstream: string
-      file_upstream: string
-      metadata_upstream?: string
-      download: {
-        concurrency: number
-        chunk_size: number
-        min_size: number
-      }
-    }
-    huggingface?: {
-      enabled: boolean
-      upstream: string
-      file_upstream: string
-      metadata_upstream?: string
-      upstream_token?: string
-      download: {
-        concurrency: number
-        chunk_size: number
-        min_size: number
-      }
-    }
-    maven?: {
-      enabled: boolean
-      upstream: string
-      file_upstream: string
-      metadata_upstream?: string
-      download: {
-        concurrency: number
-        chunk_size: number
-        min_size: number
-      }
-    }
+  platforms: Record<string, PlatformConfig>
+}
+
+export interface PlatformConfig {
+  enabled: boolean
+  upstream: string
+  file_upstream: string
+  metadata_upstream?: string
+  upstream_token?: string
+  download: {
+    concurrency: number
+    chunk_size: number
+    min_size: number
   }
 }

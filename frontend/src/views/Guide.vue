@@ -5,19 +5,21 @@ import { RouterLink } from 'vue-router'
 import copy from 'clipboard-copy'
 import { api, getToken, type PublicGuide } from '@/api/client'
 import { setLocale, type SupportedLocale } from '@/i18n'
+import { guideFallbackModules, MODULE_BY_ID } from '@/modules/registry'
+import { GUIDE_SECTIONS } from '@/modules/guide/sections'
 
 const { t, locale } = useI18n()
 const loading = ref(true)
 const guide = ref<PublicGuide | null>(null)
 const copied = ref('')
 const activeTab = ref('')
-const toolTab = ref<'pip' | 'uv'>('pip')
-const npmToolTab = ref<'npm' | 'pnpm' | 'yarn'>('npm')
 
 const loggedIn = computed(() => !!getToken())
 
 const enabledModules = computed(() => (guide.value?.modules || []).filter((m) => m.enabled))
 const disabledModules = computed(() => (guide.value?.modules || []).filter((m) => !m.enabled))
+
+const activeSection = computed(() => GUIDE_SECTIONS[activeTab.value] || null)
 
 /** 用当前打开说明页的 Host + 下载端口（适配 Docker 端口映射）。 */
 function accessDownloadURL(proxyPort: string): string {
@@ -44,151 +46,6 @@ const trustedHost = computed(() => {
     return 'localhost'
   }
 })
-
-const pipSnippets = computed(() => [
-  {
-    key: 'pipOnce',
-    title: t('guide.pipOnce'),
-    text: `pip install <pkg> -i ${indexURL.value} --trusted-host ${trustedHost.value}`,
-  },
-  {
-    key: 'pipConfig',
-    title: t('guide.pipConfig'),
-    text: `pip config set global.index-url ${indexURL.value}\npip config set global.trusted-host ${trustedHost.value}`,
-  },
-])
-
-const uvSnippets = computed(() => [
-  {
-    key: 'uvOnce',
-    title: t('guide.uvOnce'),
-    text: `uv pip install <pkg> -i ${indexURL.value}`,
-  },
-  {
-    key: 'uvConfig',
-    title: t('guide.uvConfig'),
-    text: `# Linux / macOS: ~/.config/uv/uv.toml\n# Windows: %APPDATA%\\uv\\uv.toml\n\n[[index]]\nurl = "${indexURL.value}"\ndefault = true\n\nallow-insecure-host = ["${trustedHost.value}"]`,
-  },
-  {
-    key: 'uvEnv',
-    title: t('guide.uvEnv'),
-    text: `# Linux / macOS\nexport UV_DEFAULT_INDEX=${indexURL.value}\n\n# Windows PowerShell\n$env:UV_DEFAULT_INDEX="${indexURL.value}"`,
-  },
-])
-
-const npmSnippets = computed(() => [
-  {
-    key: 'npmOnce',
-    title: t('guide.npmOnce'),
-    text: `npm config set registry ${registryURL.value}`,
-  },
-  {
-    key: 'npmConfig',
-    title: t('guide.npmConfig'),
-    text: `# .npmrc\nregistry=${registryURL.value}`,
-  },
-])
-
-const pnpmSnippets = computed(() => [
-  {
-    key: 'pnpmConfig',
-    title: t('guide.pnpmConfig'),
-    text: `pnpm config set registry ${registryURL.value}`,
-  },
-])
-
-const yarnSnippets = computed(() => [
-  {
-    key: 'yarnConfig',
-    title: t('guide.yarnConfig'),
-    text: `yarn config set registry ${registryURL.value}`,
-  },
-])
-
-const activeSnippets = computed(() => (toolTab.value === 'pip' ? pipSnippets.value : uvSnippets.value))
-
-const activeNpmSnippets = computed(() => {
-  if (npmToolTab.value === 'pnpm') return pnpmSnippets.value
-  if (npmToolTab.value === 'yarn') return yarnSnippets.value
-  return npmSnippets.value
-})
-
-const dockerSnippets = computed(() => [
-  {
-    key: 'dockerDaemon',
-    title: t('guide.dockerDaemon'),
-    text: `{\n  "registry-mirrors": ["${baseURL.value}"],\n  "insecure-registries": ["${displayHost.value}"]\n}`,
-  },
-  {
-    key: 'dockerPull',
-    title: t('guide.dockerPull'),
-    text: `# 重启 dockerd 后正常 pull，经 MirrorHub 自动灌缓存\ndocker pull nginx:1.27`,
-  },
-  {
-    key: 'dockerOffline',
-    title: t('guide.dockerOffline'),
-    text: t('guide.dockerOfflineBody'),
-  },
-])
-
-const goproxySnippets = computed(() => [
-  {
-    key: 'goproxyEnv',
-    title: t('guide.goproxyEnv'),
-    text: `export GOPROXY=${baseURL.value},direct\n# 可选：私有模块仍走直连\n# export GOPRIVATE=*.example.com`,
-  },
-  {
-    key: 'goproxyOffline',
-    title: t('guide.goproxyOffline'),
-    text: `# 完全离线（仅用已缓存；勿加 ,direct）\nexport GOPROXY=${baseURL.value},off\ngo mod download`,
-  },
-  {
-    key: 'goproxyNote',
-    title: t('guide.goproxyNote'),
-    text: t('guide.goproxyNoteBody'),
-  },
-])
-
-const huggingfaceSnippets = computed(() => [
-  {
-    key: 'huggingfaceEnv',
-    title: t('guide.huggingfaceEnv'),
-    text: `export HF_ENDPOINT=${baseURL.value}\nexport HF_HUB_DISABLE_XET=1`,
-  },
-  {
-    key: 'huggingfaceNote',
-    title: t('guide.huggingfaceNote'),
-    text: t('guide.huggingfaceNoteBody'),
-  },
-])
-
-const mavenSnippets = computed(() => [
-  {
-    key: 'mavenSettings',
-    title: t('guide.mavenSettings'),
-    text: `<settings>
-  <mirrors>
-    <mirror>
-      <id>mirrorhub</id>
-      <mirrorOf>*</mirrorOf>
-      <url>${baseURL.value}/</url>
-    </mirror>
-  </mirrors>
-</settings>`,
-  },
-  {
-    key: 'mavenGradle',
-    title: t('guide.mavenGradle'),
-    text: `repositories {
-  maven { url = uri("${baseURL.value}/") }
-}`,
-  },
-  {
-    key: 'mavenNote',
-    title: t('guide.mavenNote'),
-    text: t('guide.mavenNoteBody'),
-  },
-])
 
 function syncTab() {
   const ids = enabledModules.value.map((m) => m.id)
@@ -219,13 +76,7 @@ async function copyText(key: string, text: string) {
 }
 
 function moduleTitle(id: string) {
-  if (id === 'pypi') return 'PyPI'
-  if (id === 'npm') return 'npm'
-  if (id === 'docker') return 'Docker'
-  if (id === 'goproxy') return 'Go'
-  if (id === 'huggingface') return 'Hugging Face'
-  if (id === 'maven') return 'Maven'
-  return id
+  return MODULE_BY_ID[id]?.guideTitle || id
 }
 
 onMounted(async () => {
@@ -235,14 +86,7 @@ onMounted(async () => {
   } catch {
     guide.value = {
       proxy_port: '18081',
-      modules: [
-        { id: 'pypi', enabled: true },
-        { id: 'npm', enabled: true },
-        { id: 'docker', enabled: true },
-        { id: 'goproxy', enabled: true },
-        { id: 'huggingface', enabled: true },
-        { id: 'maven', enabled: false },
-      ],
+      modules: guideFallbackModules(),
     }
   } finally {
     syncTab()
@@ -305,217 +149,17 @@ onMounted(async () => {
             </button>
           </div>
 
-          <section v-if="activeTab === 'pypi'" class="ui-panel overflow-hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4 sm:p-5">
-              <p class="text-xs text-muted">{{ t('guide.pypiHint') }}</p>
-              <div class="flex gap-1 rounded-xl border border-line bg-bg/60 p-1">
-                <button
-                  type="button"
-                  class="ui-chip"
-                  :class="{ 'ui-chip-active': toolTab === 'pip' }"
-                  @click="toolTab = 'pip'"
-                >
-                  pip
-                </button>
-                <button
-                  type="button"
-                  class="ui-chip"
-                  :class="{ 'ui-chip-active': toolTab === 'uv' }"
-                  @click="toolTab = 'uv'"
-                >
-                  uv
-                </button>
-              </div>
-            </div>
-
-            <div class="grid gap-3 p-4 sm:p-5">
-              <article
-                v-for="item in activeSnippets"
-                :key="item.key"
-                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
-              >
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
-                  <button
-                    type="button"
-                    class="ui-btn-ghost !px-2 !py-1 text-xs"
-                    @click="copyText(item.key, item.text)"
-                  >
-                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
-                  </button>
-                </div>
-                <pre
-                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
-                >{{ item.text }}</pre>
-              </article>
-            </div>
-          </section>
-
-          <section v-else-if="activeTab === 'npm'" class="ui-panel overflow-hidden">
-            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4 sm:p-5">
-              <p class="text-xs text-muted">{{ t('guide.npmHint') }}</p>
-              <div class="flex gap-1 rounded-xl border border-line bg-bg/60 p-1">
-                <button
-                  type="button"
-                  class="ui-chip"
-                  :class="{ 'ui-chip-active': npmToolTab === 'npm' }"
-                  @click="npmToolTab = 'npm'"
-                >
-                  npm
-                </button>
-                <button
-                  type="button"
-                  class="ui-chip"
-                  :class="{ 'ui-chip-active': npmToolTab === 'pnpm' }"
-                  @click="npmToolTab = 'pnpm'"
-                >
-                  pnpm
-                </button>
-                <button
-                  type="button"
-                  class="ui-chip"
-                  :class="{ 'ui-chip-active': npmToolTab === 'yarn' }"
-                  @click="npmToolTab = 'yarn'"
-                >
-                  yarn
-                </button>
-              </div>
-            </div>
-
-            <div class="grid gap-3 p-4 sm:p-5">
-              <article
-                v-for="item in activeNpmSnippets"
-                :key="item.key"
-                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
-              >
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
-                  <button
-                    type="button"
-                    class="ui-btn-ghost !px-2 !py-1 text-xs"
-                    @click="copyText(item.key, item.text)"
-                  >
-                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
-                  </button>
-                </div>
-                <pre
-                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
-                >{{ item.text }}</pre>
-              </article>
-            </div>
-          </section>
-
-          <section v-else-if="activeTab === 'docker'" class="ui-panel overflow-hidden">
-            <div class="border-b border-line p-4 sm:p-5">
-              <p class="text-xs text-muted">{{ t('guide.dockerHint') }}</p>
-            </div>
-            <div class="grid gap-3 p-4 sm:p-5">
-              <article
-                v-for="item in dockerSnippets"
-                :key="item.key"
-                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
-              >
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
-                  <button
-                    v-if="item.key !== 'dockerOffline'"
-                    type="button"
-                    class="ui-btn-ghost !px-2 !py-1 text-xs"
-                    @click="copyText(item.key, item.text)"
-                  >
-                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
-                  </button>
-                </div>
-                <pre
-                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
-                >{{ item.text }}</pre>
-              </article>
-            </div>
-          </section>
-
-          <section v-else-if="activeTab === 'goproxy'" class="ui-panel overflow-hidden">
-            <div class="border-b border-line p-4 sm:p-5">
-              <p class="text-xs text-muted">{{ t('guide.goproxyHint') }}</p>
-            </div>
-            <div class="grid gap-3 p-4 sm:p-5">
-              <article
-                v-for="item in goproxySnippets"
-                :key="item.key"
-                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
-              >
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
-                  <button
-                    v-if="item.key !== 'goproxyNote'"
-                    type="button"
-                    class="ui-btn-ghost !px-2 !py-1 text-xs"
-                    @click="copyText(item.key, item.text)"
-                  >
-                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
-                  </button>
-                </div>
-                <pre
-                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
-                >{{ item.text }}</pre>
-              </article>
-            </div>
-          </section>
-
-          <section v-else-if="activeTab === 'huggingface'" class="ui-panel overflow-hidden">
-            <div class="border-b border-line p-4 sm:p-5">
-              <p class="text-xs text-muted">{{ t('guide.huggingfaceHint') }}</p>
-            </div>
-            <div class="grid gap-3 p-4 sm:p-5">
-              <article
-                v-for="item in huggingfaceSnippets"
-                :key="item.key"
-                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
-              >
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
-                  <button
-                    v-if="item.key !== 'huggingfaceNote'"
-                    type="button"
-                    class="ui-btn-ghost !px-2 !py-1 text-xs"
-                    @click="copyText(item.key, item.text)"
-                  >
-                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
-                  </button>
-                </div>
-                <pre
-                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
-                >{{ item.text }}</pre>
-              </article>
-            </div>
-          </section>
-
-          <section v-else-if="activeTab === 'maven'" class="ui-panel overflow-hidden">
-            <div class="border-b border-line p-4 sm:p-5">
-              <p class="text-xs text-muted">{{ t('guide.mavenHint') }}</p>
-            </div>
-            <div class="grid gap-3 p-4 sm:p-5">
-              <article
-                v-for="item in mavenSnippets"
-                :key="item.key"
-                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
-              >
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
-                  <button
-                    v-if="item.key !== 'mavenNote'"
-                    type="button"
-                    class="ui-btn-ghost !px-2 !py-1 text-xs"
-                    @click="copyText(item.key, item.text)"
-                  >
-                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
-                  </button>
-                </div>
-                <pre
-                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
-                >{{ item.text }}</pre>
-              </article>
-            </div>
-          </section>
+          <component
+            :is="activeSection"
+            v-if="activeSection"
+            :base-url="baseURL"
+            :index-url="indexURL"
+            :registry-url="registryURL"
+            :display-host="displayHost"
+            :trusted-host="trustedHost"
+            :copied="copied"
+            @copy="copyText"
+          />
         </template>
 
         <p v-if="disabledModules.length" class="mt-4 text-xs text-muted">
