@@ -5,58 +5,38 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
-	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
-	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/platform"
 	"github.com/livehl/mirrorhub/internal/router"
 )
 
-func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router.Match, cfg config.Config, pypi config.PlatformConfig, prefetch, boost bool, onAcquired func(), onProgress func(done, total int64), taskID string) (string, string, error) {
+func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router.Match, plat platform.Platform, cfg config.Config, pypi config.PlatformConfig, prefetch, boost bool, onAcquired func(), onProgress func(done, total int64), taskID string) (string, string, error) {
 	origURL := m.TargetURL
 	headers := platform.FilterRequestHeaders(r.Header)
 	cacheKey := cache.KeyFromURL(origURL)
 	expectedSHA := downloader.LookupDigest(origURL)
 
-	// maven：制品按 URL 定键（与预取一致）
-	if m.Platform == "maven" {
-		cacheKey = "maven:pkg:" + cache.KeyFromURL(origURL)
+	if keyer, ok := plat.(platform.PackageKeyer); ok {
+		key, sha := keyer.PackageCacheIdentity(r.URL.Path, origURL, r.Header, cacheKey)
+		cacheKey = key
+		if sha != "" {
+			expectedSHA = sha
+			downloader.RememberDigest(origURL, sha)
+		}
 	}
 
-	// docker blob：按 digest 永久缓存；回源注入 Bearer
-	if m.Platform == "docker" {
-		if _, dig, ok := dockerhandler.ParseBlobPath(r.URL.Path); ok {
-			cacheKey = dockerhandler.BlobCacheKey(dig)
-			hexDig := strings.TrimPrefix(dig, "sha256:")
-			if hexDig != "" {
-				expectedSHA = hexDig
-				downloader.RememberDigest(origURL, hexDig)
-			}
-		}
-		if err := s.injectDockerAuth(r, headers, cfg, r.URL.Path); err != nil {
+	if auther, ok := plat.(platform.UpstreamAuther); ok {
+		if err := auther.InjectUpstreamAuth(r.Context(), headers, cfg, r.URL.Path); err != nil {
 			if entry, ok := s.cache.Get(cacheKey); ok {
 				return s.servePackageHit(w, r, entry, boost, onAcquired, onProgress)
 			}
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return "na", "proxy", err
-		}
-	}
-
-	// huggingface：规范 resolve URL 定键；可选服务端 Token；剥 Xet 靠下游 200 body
-	if m.Platform == "huggingface" {
-		cacheKey = "hf:pkg:" + cache.KeyFromURL(origURL)
-		injectHFAuth(headers, pypi)
-		// 若客户端带了 Linked-ETag / 已知 digest，优先内容寻址键
-		if etag := r.Header.Get("X-Linked-Etag"); etag != "" {
-			if bk := hfhandler.BlobCacheKeyFromETag(etag); bk != "" {
-				cacheKey = bk
-			}
 		}
 	}
 
@@ -87,8 +67,8 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("X-Cache", "MISS")
 		w.Header().Set("X-Mirrorhub-Strategy", "proxy")
-		if m.Platform == "docker" {
-			w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		if d, ok := plat.(platform.PackageHeaderDecorator); ok {
+			d.DecoratePackageHeaders(w)
 		}
 		if boost {
 			w.Header().Set("X-Mirrorhub-Boost", "1")
@@ -105,9 +85,8 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 	fetchURL := origURL
 	var size int64 = -1
 	hasSize := false
-	// npm / docker / goproxy / maven 交互冷路径跳过上游 HEAD
-	// huggingface 不跳过：需 Content-Length / X-Linked-Size 校验，避免慢速 CDN 截断后误缓存
-	skipHead := (m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy" || m.Platform == "maven") && !prefetch
+	// SkipUpstreamHead：交互冷路径跳过上游 HEAD；HF 等需 CL 校验的不设此标志
+	skipHead := m.SkipUpstreamHead && !prefetch
 	if !skipHead {
 		hs, headCT, finalURL, headErr := s.dl.Head(r.Context(), origURL, headers)
 		if headErr == nil {
@@ -161,12 +140,17 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 	}
 
 	if !prefetch {
-		label, err := s.dl.ServePackage(r.Context(), w, opt)
+		tw := &writeTrack{ResponseWriter: w}
+		label, err := s.dl.ServePackage(r.Context(), tw, opt)
 		strat := "stream"
 		if label == "hit" {
 			strat = "cache"
 		} else if hasSize && size >= pypi.Download.MinSize && pypi.Download.MinSize > 0 {
 			strat = "parallel-stream"
+		}
+		// 未写响应头就失败时补 502，避免净空 200
+		if err != nil && !tw.wrote {
+			http.Error(w, err.Error(), http.StatusBadGateway)
 		}
 		return label, strat, err
 	}
@@ -187,6 +171,28 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 		strat = "parallel"
 	}
 	return label, strat, err
+}
+
+// writeTrack 记录是否已向客户端写过响应（头或体）。
+type writeTrack struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (w *writeTrack) WriteHeader(statusCode int) {
+	w.wrote = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *writeTrack) Write(p []byte) (int, error) {
+	w.wrote = true
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *writeTrack) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func (s *Server) servePackageHit(w http.ResponseWriter, r *http.Request, entry *cache.Entry, boost bool, onAcquired func(), onProgress func(done, total int64)) (string, string, error) {
@@ -228,7 +234,13 @@ func (s *Server) servePackageHit(w http.ResponseWriter, r *http.Request, entry *
 	}
 	// GET 命中：直接回本地缓存，禁止再打上游 HEAD（否则每次 HIT 都被上游探测拖慢）
 	if r.Method == http.MethodGet {
-		label, err := s.dl.ServeCachedEntry(w, entry, boost, r.Header.Get("Range"), "HIT")
+		tw := &writeTrack{ResponseWriter: w}
+		label, err := s.dl.ServeCachedEntry(tw, entry, boost, r.Header.Get("Range"), "HIT")
+		if err != nil && !tw.wrote {
+			// 元数据在、文件缺失：删坏条目并 502，避免空 200
+			_ = s.cache.Delete(entry.Key)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
 		return label, "cache", err
 	}
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 
@@ -30,6 +31,74 @@ func All() []Platform {
 	defer mu.RUnlock()
 	out := make([]Platform, len(platforms))
 	copy(out, platforms)
+	return out
+}
+
+// ByName 按平台名查找已注册实例；未找到返回 nil。
+func ByName(name string) Platform {
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, p := range platforms {
+		if p.Name() == name {
+			return p
+		}
+	}
+	return nil
+}
+
+// PrefetchExpanders 按 PrefetchPriority 降序返回实现了 PrefetchExpander 的平台。
+func PrefetchExpanders() []PrefetchExpander {
+	mu.RLock()
+	defer mu.RUnlock()
+	type pair struct {
+		p PrefetchExpander
+		n int
+	}
+	var list []pair
+	for _, p := range platforms {
+		if e, ok := p.(PrefetchExpander); ok {
+			list = append(list, pair{e, e.PrefetchPriority()})
+		}
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].n > list[j].n })
+	out := make([]PrefetchExpander, len(list))
+	for i, x := range list {
+		out[i] = x.p
+	}
+	return out
+}
+
+// LookupPrefetchOwner 返回 OwnsPrefetchItem 为真的最高优先级平台。
+func LookupPrefetchOwner(item string) Platform {
+	for _, e := range PrefetchExpanders() {
+		if e.OwnsPrefetchItem(item) {
+			if p, ok := e.(Platform); ok {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
+// TextDetectors 按 TextDetectPriority 降序。
+func TextDetectors() []TextDetector {
+	mu.RLock()
+	defer mu.RUnlock()
+	type pair struct {
+		d TextDetector
+		n int
+	}
+	var list []pair
+	for _, p := range platforms {
+		if d, ok := p.(TextDetector); ok {
+			list = append(list, pair{d, d.TextDetectPriority()})
+		}
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].n > list[j].n })
+	out := make([]TextDetector, len(list))
+	for i, x := range list {
+		out[i] = x.d
+	}
 	return out
 }
 

@@ -284,7 +284,7 @@ export default {
     dockerArchHint: 'Prefetch maps selected platforms to arches (e.g. linux → linux/amd64). Wrong arch means missing layers offline.',
     goproxyUpstreamHint: 'Go module proxy upstream; read-only cache (no private module auth).',
     goproxyPrefetchHint: 'Paste go.mod or go.sum on Prefetch. Only explicit versions are expanded; use go mod download via this proxy to fill the full graph.',
-    huggingfaceUpstreamHint: 'Hub API / file upstream (default hf-mirror.com); public repos anonymous, gated needs org Token.',
+    huggingfaceUpstreamHint: 'Hub API / file upstream (default huggingface.co); public repos anonymous, gated needs org Token.',
     huggingfacePrefetchHint: 'Paste owner/repo or datasets/owner/repo (optional @revision) on Prefetch; all files are expanded via tree API.',
     mavenUpstreamHint: 'Maven2 repository upstream (default Aliyun central); read-only, no deploy.',
     mavenPrefetchHint: 'Paste pom.xml or lines of group:artifact:version on Prefetch; expands pom+jar closure (skips test scope).',

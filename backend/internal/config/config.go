@@ -377,8 +377,8 @@ func defaultRuntime() RuntimeSettings {
 			},
 			"huggingface": {
 				Enabled:      true,
-				Upstream:     "https://hf-mirror.com",
-				FileUpstream: "https://hf-mirror.com",
+				Upstream:     "https://huggingface.co",
+				FileUpstream: "https://huggingface.co",
 				Download: DownloadConfig{
 					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 				},
@@ -616,8 +616,8 @@ func applyDefaults(cfg *Config) {
 	if _, ok := cfg.Platforms["huggingface"]; !ok {
 		cfg.Platforms["huggingface"] = PlatformConfig{
 			Enabled:      true,
-			Upstream:     "https://hf-mirror.com",
-			FileUpstream: "https://hf-mirror.com",
+			Upstream:     "https://huggingface.co",
+			FileUpstream: "https://huggingface.co",
 			Download: DownloadConfig{
 				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 			},
@@ -633,10 +633,11 @@ func applyDefaults(cfg *Config) {
 		if p.Download.MinSize <= 0 {
 			p.Download.MinSize = 100 * 1024
 		}
-		if p.Upstream == "" {
-			p.Upstream = "https://hf-mirror.com"
+		// 空值或旧默认镜像 → 官网
+		if p.Upstream == "" || p.Upstream == "https://hf-mirror.com" {
+			p.Upstream = "https://huggingface.co"
 		}
-		if p.FileUpstream == "" {
+		if p.FileUpstream == "" || p.FileUpstream == "https://hf-mirror.com" {
 			p.FileUpstream = p.Upstream
 		}
 		p.RateLimit = nil

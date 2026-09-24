@@ -62,10 +62,12 @@ func MatchNPM(path string, r Routes) *router.Match {
 
 	if npmhandler.IsTarballPath(path) {
 		return &router.Match{
-			Platform:     "npm",
-			Strategy:     router.StrategyParallel,
-			UpstreamBase: fileUp,
-			TargetURL:    fileUp + path,
+			Platform:         "npm",
+			Strategy:         router.StrategyParallel,
+			UpstreamBase:     fileUp,
+			TargetURL:        fileUp + path,
+			ReadOnly:         true,
+			SkipUpstreamHead: true,
 		}
 	}
 
@@ -77,6 +79,7 @@ func MatchNPM(path string, r Routes) *router.Match {
 		TargetURL:      metaUp + path,
 		IsIndex:        true,
 		SmallFileBoost: true,
+		ReadOnly:       true,
 	}
 }
 

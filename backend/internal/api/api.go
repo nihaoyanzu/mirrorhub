@@ -18,13 +18,14 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
-	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
-	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
-	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
-	mavenhandler "github.com/livehl/mirrorhub/internal/handlers/maven"
-	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
-	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
+	"github.com/livehl/mirrorhub/internal/platform"
+	_ "github.com/livehl/mirrorhub/internal/platform/docker"
+	_ "github.com/livehl/mirrorhub/internal/platform/goproxy"
+	_ "github.com/livehl/mirrorhub/internal/platform/huggingface"
+	_ "github.com/livehl/mirrorhub/internal/platform/maven"
+	_ "github.com/livehl/mirrorhub/internal/platform/npm"
+	_ "github.com/livehl/mirrorhub/internal/platform/pypi"
 	"github.com/livehl/mirrorhub/internal/prefetch"
 	"github.com/livehl/mirrorhub/internal/ratelimit"
 	"github.com/livehl/mirrorhub/internal/scheduler"
@@ -341,53 +342,17 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 	items := append([]string{}, body.URLs...)
 	var skipped []string
 	if strings.TrimSpace(body.Text) != "" {
-		switch {
-		case npmhandler.LookLikeLockfile(body.Text):
-			parsed, skip := npmhandler.ParseLockfile(body.Text)
-			items = append(items, parsed...)
-			skipped = skip
-		case goproxyhandler.LookLikeGoSum(body.Text):
-			refs, skip := goproxyhandler.ParseGoSum(body.Text)
-			for _, ref := range refs {
-				items = append(items, ref.Path+"@"+ref.Version)
+		for _, det := range platform.TextDetectors() {
+			if !det.LookLikePrefetchText(body.Text) {
+				continue
 			}
-			skipped = skip
-		case goproxyhandler.LookLikeGoMod(body.Text):
-			refs, skip := goproxyhandler.ParseGoMod(body.Text)
-			for _, ref := range refs {
-				items = append(items, ref.Path+"@"+ref.Version)
+			res, ok := det.ParsePrefetchText(body.Text)
+			if !ok {
+				continue
 			}
-			skipped = skip
-		case hfhandler.LookLikeHFRepoList(body.Text):
-			parsed, skip := hfhandler.ParseRepoList(body.Text)
-			items = append(items, parsed...)
-			skipped = skip
-		case mavenhandler.LookLikePom(body.Text):
-			coords, skip := mavenhandler.ParsePomDependencies(body.Text)
-			for _, c := range coords {
-				items = append(items, c.String())
-			}
-			skipped = skip
-		case mavenhandler.LookLikeGAVList(body.Text):
-			coords, skip := mavenhandler.ParseGAVList(body.Text)
-			for _, c := range coords {
-				items = append(items, c.String())
-			}
-			skipped = skip
-		case dockerhandler.LookLikeImageList(body.Text):
-			refs, skip := dockerhandler.ParseImageList(body.Text)
-			for _, ref := range refs {
-				if strings.HasPrefix(ref.Tag, "sha256:") {
-					items = append(items, ref.Repo+"@"+ref.Tag)
-				} else {
-					items = append(items, ref.Repo+":"+ref.Tag)
-				}
-			}
-			skipped = skip
-		default:
-			parsed, skip := pypihandler.ParseDependencyText(body.Text)
-			items = append(items, parsed...)
-			skipped = skip
+			items = append(items, res.Items...)
+			skipped = res.Skipped
+			break
 		}
 	}
 	// 去重保序

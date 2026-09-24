@@ -143,7 +143,7 @@ func splitAtRevision(s string) (id, rev string) {
 func TreeAPIURL(upstream, repoType, repoID, revision string) string {
 	base := strings.TrimRight(strings.TrimSpace(upstream), "/")
 	if base == "" {
-		base = "https://hf-mirror.com"
+		base = "https://huggingface.co"
 	}
 	if repoType != "datasets" {
 		repoType = "models"
@@ -158,7 +158,7 @@ func TreeAPIURL(upstream, repoType, repoID, revision string) string {
 func ResolveFileURL(upstream, repoType, repoID, revision, filePath string) string {
 	base := strings.TrimRight(strings.TrimSpace(upstream), "/")
 	if base == "" {
-		base = "https://hf-mirror.com"
+		base = "https://huggingface.co"
 	}
 	filePath = strings.TrimPrefix(filePath, "/")
 	if revision == "" {

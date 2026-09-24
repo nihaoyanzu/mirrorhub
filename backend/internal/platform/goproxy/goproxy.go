@@ -75,15 +75,18 @@ func MatchGoproxy(path string, r Routes) *router.Match {
 			TargetURL:      target,
 			IsIndex:        true,
 			SmallFileBoost: true,
+			ReadOnly:       true,
 		}
 	}
 
 	if goproxyhandler.IsPackagePath(path) {
 		return &router.Match{
-			Platform:     "goproxy",
-			Strategy:     router.StrategyParallel,
-			UpstreamBase: fileUp,
-			TargetURL:    fileUp + path,
+			Platform:         "goproxy",
+			Strategy:         router.StrategyParallel,
+			UpstreamBase:     fileUp,
+			TargetURL:        fileUp + path,
+			ReadOnly:         true,
+			SkipUpstreamHead: true,
 		}
 	}
 
@@ -94,6 +97,7 @@ func MatchGoproxy(path string, r Routes) *router.Match {
 		TargetURL:      modUp + path,
 		IsIndex:        true,
 		SmallFileBoost: true,
+		ReadOnly:       true,
 	}
 }
 

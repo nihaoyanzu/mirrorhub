@@ -15,8 +15,6 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
-	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
-	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
@@ -52,7 +50,6 @@ type Server struct {
 	log      *zap.Logger
 
 	revalLocks sync.Map // cacheKey -> chan struct{}，per-key 续期锁防惊群
-	dockerAuth *dockerAuth
 }
 
 func New(cfg *config.Manager, c *cache.Manager, dl *downloader.Engine, sched *scheduler.Scheduler, lim *ratelimit.Registry, tr *traffic.Recorder, log *zap.Logger) *Server {
@@ -72,30 +69,9 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Get()
 
-	// Docker Registry 探活：本地应答，不回源
-	if dockerhandler.IsV2Root(r.URL.Path) {
-		if pcfg, ok := cfg.Platforms["docker"]; ok && pcfg.Enabled {
-			switch r.Method {
-			case http.MethodGet, http.MethodHead:
-				w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-				w.WriteHeader(http.StatusOK)
-				return
-			default:
-				http.Error(w, "docker mirror is read-only", http.StatusMethodNotAllowed)
-				return
-			}
-		}
-	}
-
-	// Go sumdb supported：本地 200，引导客户端经本代理访问 checksum DB
-	if goproxyhandler.IsSumDBSupported(r.URL.Path) {
-		if pcfg, ok := cfg.Platforms["goproxy"]; ok && pcfg.Enabled {
-			switch r.Method {
-			case http.MethodGet, http.MethodHead:
-				w.WriteHeader(http.StatusOK)
-				return
-			default:
-				http.Error(w, "goproxy mirror is read-only", http.StatusMethodNotAllowed)
+	for _, p := range platform.All() {
+		if prober, ok := p.(platform.LocalProber); ok {
+			if prober.TryLocalProbe(w, r, cfg) {
 				return
 			}
 		}
@@ -109,9 +85,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	m := mr.Match
 	pcfg := cfg.Platforms[mr.Platform.Name()]
 
-	// npm / docker / goproxy / huggingface / maven 只读代理
-	if m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy" ||
-		m.Platform == "huggingface" || m.Platform == "maven" {
+	if m.ReadOnly {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
 		default:
@@ -174,7 +148,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		strategy = "metadata"
 		cacheLabel, taskErr = s.handleMetadata(cw, r, m, cfg, pcfg, prio == scheduler.PriorityPrefetch, boost, onAcquired, taskID)
 	case m.Strategy == router.StrategyParallel:
-		cacheLabel, strategy, taskErr = s.handlePackage(cw, r, m, cfg, pcfg, prio == scheduler.PriorityPrefetch, boost, onAcquired, onProgress, taskID)
+		cacheLabel, strategy, taskErr = s.handlePackage(cw, r, m, mr.Platform, cfg, pcfg, prio == scheduler.PriorityPrefetch, boost, onAcquired, onProgress, taskID)
 	default:
 		http.Error(cw, "unknown strategy", http.StatusInternalServerError)
 	}

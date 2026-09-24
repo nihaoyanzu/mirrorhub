@@ -17,9 +17,6 @@ func init() {
 	platform.Register(&DockerPlatform{})
 }
 
-// DockerPlatform 实现 platform.Platform。
-type DockerPlatform struct{}
-
 func (p *DockerPlatform) Name() string { return "docker" }
 
 func (p *DockerPlatform) Route(path string, cfg config.PlatformConfig) *router.Match {
@@ -57,10 +54,12 @@ func MatchDocker(path string, r Routes) *router.Match {
 
 	if dockerhandler.IsBlobPath(path) {
 		return &router.Match{
-			Platform:     "docker",
-			Strategy:     router.StrategyParallel,
-			UpstreamBase: fileUp,
-			TargetURL:    fileUp + path,
+			Platform:         "docker",
+			Strategy:         router.StrategyParallel,
+			UpstreamBase:     fileUp,
+			TargetURL:        fileUp + path,
+			ReadOnly:         true,
+			SkipUpstreamHead: true,
 		}
 	}
 	if dockerhandler.IsManifestPath(path) {
@@ -71,6 +70,7 @@ func MatchDocker(path string, r Routes) *router.Match {
 			TargetURL:      reg + path,
 			IsIndex:        true,
 			SmallFileBoost: true,
+			ReadOnly:       true,
 		}
 	}
 	// 其它 /v2/... 只读透传为索引（少见）
@@ -81,6 +81,7 @@ func MatchDocker(path string, r Routes) *router.Match {
 		TargetURL:      reg + path,
 		IsIndex:        true,
 		SmallFileBoost: true,
+		ReadOnly:       true,
 	}
 }
 

@@ -252,8 +252,8 @@ async function load() {
     const huggingface = cfg.platforms?.huggingface
     platformDrafts.huggingface = {
       enabled: !!huggingface?.enabled,
-      upstream: huggingface?.upstream || 'https://hf-mirror.com',
-      file_upstream: huggingface?.file_upstream || huggingface?.upstream || 'https://hf-mirror.com',
+      upstream: huggingface?.upstream || 'https://huggingface.co',
+      file_upstream: huggingface?.file_upstream || huggingface?.upstream || 'https://huggingface.co',
       metadata_upstream: '',
       upstream_token: huggingface?.upstream_token || '',
       concurrency: huggingface?.download?.concurrency ?? 16,

@@ -57,10 +57,12 @@ func MatchMaven(path string, r Routes) *router.Match {
 	rel := mavenhandler.StripMaven2Prefix(path)
 	if mavenhandler.IsPackagePath(path) {
 		return &router.Match{
-			Platform:     "maven",
-			Strategy:     router.StrategyParallel,
-			UpstreamBase: fileUp,
-			TargetURL:    mavenhandler.TargetURL(fileUp, rel),
+			Platform:         "maven",
+			Strategy:         router.StrategyParallel,
+			UpstreamBase:     fileUp,
+			TargetURL:        mavenhandler.TargetURL(fileUp, rel),
+			ReadOnly:         true,
+			SkipUpstreamHead: true,
 		}
 	}
 
@@ -71,6 +73,7 @@ func MatchMaven(path string, r Routes) *router.Match {
 		TargetURL:      mavenhandler.TargetURL(up, rel),
 		IsIndex:        true,
 		SmallFileBoost: true,
+		ReadOnly:       true,
 	}
 }
 

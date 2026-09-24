@@ -3,8 +3,6 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"os"
 	"strconv"
@@ -14,10 +12,6 @@ import (
 
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
-	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
-	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
-	mavenhandler "github.com/livehl/mirrorhub/internal/handlers/maven"
-	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	"github.com/livehl/mirrorhub/internal/platform"
 	"github.com/livehl/mirrorhub/internal/router"
 )
@@ -34,13 +28,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 
 	cacheKey := m.Platform + ":index:" + cache.KeyFromURL(m.TargetURL)
 	clientAccept := r.Header.Get("Accept")
-	// npm：按 abbreviated / full 分键
-	if m.Platform == "npm" {
-		cacheKey += ":" + npmhandler.IndexCacheVariant(clientAccept)
-	}
-	// docker：按 Accept 变体分键（manifest list vs image）
-	if m.Platform == "docker" {
-		cacheKey += ":" + dockerhandler.ManifestAcceptVariant(clientAccept)
+	if keyer, ok := plat.(platform.IndexKeyer); ok {
+		if v := keyer.IndexCacheVariant(clientAccept); v != "" {
+			cacheKey += ":" + v
+		}
 	}
 
 	// ---------- 1. 缓存命中（未过期）→ 直接返回 ----------
@@ -55,28 +46,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	// 客户端条件请求针对我们改写后的 ETag，不能原样转给上游
 	headers.Del("If-None-Match")
 	headers.Del("If-Modified-Since")
-	if m.Platform == "npm" {
-		if npmhandler.PrefersAbbreviated(clientAccept) {
-			headers.Set("Accept", "application/vnd.npm.install-v1+json")
-		} else if strings.TrimSpace(headers.Get("Accept")) == "" {
-			headers.Set("Accept", "application/json")
-		}
+	if accepter, ok := plat.(platform.IndexAccepter); ok {
+		accepter.PrepareIndexHeaders(clientAccept, headers)
 	}
-	if m.Platform == "docker" {
-		if strings.TrimSpace(headers.Get("Accept")) == "" {
-			headers.Set("Accept", dockerhandler.DefaultManifestAccept())
-		}
-		if err := s.injectDockerAuth(r, headers, cfg, r.URL.Path); err != nil {
-			// 换票失败：尽量 STALE
+	if auther, ok := plat.(platform.UpstreamAuther); ok {
+		if err := auther.InjectUpstreamAuth(r.Context(), headers, cfg, r.URL.Path); err != nil {
 			if stale, ok := s.cache.GetStale(cacheKey); ok {
 				return s.serveCachedIndex(w, r, stale, plat, cfg, boost, "STALE")
 			}
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return "na", err
 		}
-	}
-	if m.Platform == "huggingface" {
-		injectHFAuth(headers, cfg.Platforms["huggingface"])
 	}
 
 	var staleEntry *cache.Entry
@@ -94,7 +74,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 				if len(result.body) > 0 && result.contentType != "" {
 					body := result.body
 					body, _ = platform.MaybeGunzip(body)
-					ct := indexContentType(m.Platform, result.contentType, clientAccept, body)
+					ct := indexContentType(plat, result.contentType, clientAccept, body)
 					if _, err := s.cache.PutBytes(cacheKey, body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
 						SourceURL:    m.TargetURL,
 						Kind:         "index",
@@ -106,7 +86,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 					tr := plat.TransformIndex(body, ct, cfg, clientAccept, m.TargetURL)
 					w.Header().Set("Content-Length", strconv.Itoa(len(tr.Body)))
 					w.Header().Set("ETag", tr.ETag)
-					setDockerManifestHeaders(w, m.Platform, tr.Body)
+					decorateIndexHeaders(w, plat, tr.Body)
 					writeProxyHeaders(w, http.Header{}, tr.ContentType, http.StatusOK, "MISS", "index", boost)
 					_, _ = w.Write(tr.Body)
 					return "miss", nil
@@ -130,16 +110,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 				return s.serveCachedIndex(w, r, staleEntry, plat, cfg, boost, "STALE")
 			}
 		}
-		// docker 401：清票后仍失败则原样返回
-		if m.Platform == "docker" && statusSuggestsAuth(getErr) {
-			s.invalidateDockerAuth(cfg, r.URL.Path)
+		if statusSuggestsAuth(getErr) {
+			if inv, ok := plat.(platform.UpstreamAuthInvalidator); ok {
+				inv.InvalidateUpstreamAuth(cfg, r.URL.Path)
+			}
 		}
 		http.Error(w, getErr.Error(), http.StatusBadGateway)
 		return "miss", getErr
 	}
 
 	body, _ = platform.MaybeGunzip(body)
-	ct := indexContentType(m.Platform, respHeader.Get("Content-Type"), clientAccept, body)
+	ct := indexContentType(plat, respHeader.Get("Content-Type"), clientAccept, body)
 	if r.Method == http.MethodGet && status >= 200 && status < 300 {
 		if _, err := s.cache.PutBytes(cacheKey, body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
 			SourceURL:    m.TargetURL,
@@ -161,7 +142,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	w.Header().Set("ETag", result.ETag)
 	stripXetFromHeader(respHeader)
 	writeProxyHeaders(w, respHeader, result.ContentType, status, "MISS", "index", boost)
-	setDockerManifestHeaders(w, m.Platform, result.Body)
+	decorateIndexHeaders(w, plat, result.Body)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(result.Body)
 	}
@@ -253,7 +234,7 @@ func (s *Server) doRevalidation(cacheKey, targetURL, platName string, stale *cac
 func (s *Server) serveRevalidated(w http.ResponseWriter, r *http.Request, result *revalResult, plat platform.Platform, cfg config.Config, boost bool) (string, error) {
 	data, _ := platform.MaybeGunzip(result.body)
 	accept := r.Header.Get("Accept")
-	ct := indexContentType(plat.Name(), result.contentType, accept, data)
+	ct := indexContentType(plat, result.contentType, accept, data)
 	rememberIndexDigests(data, result.entry.SourceURL)
 	tr := plat.TransformIndex(data, ct, cfg, accept, result.entry.SourceURL)
 	if matchETag(r.Header.Get("If-None-Match"), tr.ETag) {
@@ -267,7 +248,7 @@ func (s *Server) serveRevalidated(w http.ResponseWriter, r *http.Request, result
 	w.Header().Set("ETag", tr.ETag)
 	w.Header().Set("X-Cache", "REVALIDATED")
 	w.Header().Set("X-Mirrorhub-Strategy", "index")
-	setDockerManifestHeaders(w, plat.Name(), tr.Body)
+	decorateIndexHeaders(w, plat, tr.Body)
 	if boost {
 		w.Header().Set("X-Mirrorhub-Boost", "1")
 	}
@@ -290,7 +271,7 @@ func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry 
 	}
 	data, _ = platform.MaybeGunzip(data)
 	accept := r.Header.Get("Accept")
-	ct := indexContentType(plat.Name(), entry.ContentType, accept, data)
+	ct := indexContentType(plat, entry.ContentType, accept, data)
 	rememberIndexDigests(data, entry.SourceURL)
 	tr := plat.TransformIndex(data, ct, cfg, accept, entry.SourceURL)
 	if matchETag(r.Header.Get("If-None-Match"), tr.ETag) {
@@ -304,7 +285,7 @@ func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry 
 	w.Header().Set("ETag", tr.ETag)
 	w.Header().Set("X-Cache", cacheLabel)
 	w.Header().Set("X-Mirrorhub-Strategy", "index")
-	setDockerManifestHeaders(w, plat.Name(), tr.Body)
+	decorateIndexHeaders(w, plat, tr.Body)
 	if boost {
 		w.Header().Set("X-Mirrorhub-Boost", "1")
 	}
@@ -314,35 +295,17 @@ func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry 
 	return "hit", nil
 }
 
-// indexContentType 选择索引缓存/响应用的 Content-Type；npm 避免被 PyPI MIME 嗅探污染。
-func indexContentType(platName, upstreamCT, accept string, body []byte) string {
-	if platName == "npm" {
-		return npmhandler.DetectJSONContentType(upstreamCT, accept, body)
-	}
-	if platName == "docker" {
-		return dockerhandler.DetectManifestContentType(upstreamCT, body)
-	}
-	if platName == "huggingface" {
-		return hfhandler.DetectContentType("", upstreamCT, body)
-	}
-	if platName == "maven" {
-		return mavenhandler.DetectContentType("", upstreamCT, body)
+func indexContentType(plat platform.Platform, upstreamCT, accept string, body []byte) string {
+	if det, ok := plat.(platform.ContentTypeDetector); ok {
+		return det.DetectIndexContentType(upstreamCT, accept, body)
 	}
 	return platform.DetectContentType(upstreamCT, body)
 }
 
-func setDockerManifestHeaders(w http.ResponseWriter, platName string, body []byte) {
-	if platName != "docker" {
-		return
+func decorateIndexHeaders(w http.ResponseWriter, plat platform.Platform, body []byte) {
+	if d, ok := plat.(platform.IndexHeaderDecorator); ok {
+		d.DecorateIndexHeaders(w, body)
 	}
-	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	if len(body) == 0 {
-		return
-	}
-	// 覆盖上游透传，避免重复 Digest 头
-	w.Header().Del("Docker-Content-Digest")
-	sum := sha256.Sum256(body)
-	w.Header().Set("Docker-Content-Digest", "sha256:"+hex.EncodeToString(sum[:]))
 }
 
 func statusSuggestsAuth(err error) bool {

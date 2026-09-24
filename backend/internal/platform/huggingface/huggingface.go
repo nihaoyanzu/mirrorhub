@@ -48,7 +48,7 @@ func MatchHuggingFace(path string, r Routes) *router.Match {
 
 	apiUp := strings.TrimRight(strings.TrimSpace(r.Upstream), "/")
 	if apiUp == "" {
-		apiUp = "https://hf-mirror.com"
+		apiUp = "https://huggingface.co"
 	}
 	fileUp := strings.TrimRight(strings.TrimSpace(r.FileUpstream), "/")
 	if fileUp == "" {
@@ -61,6 +61,7 @@ func MatchHuggingFace(path string, r Routes) *router.Match {
 			Strategy:     router.StrategyParallel,
 			UpstreamBase: fileUp,
 			TargetURL:    fileUp + path,
+			ReadOnly:     true,
 		}
 	}
 
@@ -71,6 +72,7 @@ func MatchHuggingFace(path string, r Routes) *router.Match {
 		TargetURL:      apiUp + path,
 		IsIndex:        true,
 		SmallFileBoost: true,
+		ReadOnly:       true,
 	}
 }
 

@@ -284,7 +284,7 @@ export default {
     dockerArchHint: '预取将按所选平台映射架构（如 linux → linux/amd64）；选错架构会导致离线缺层。',
     goproxyUpstreamHint: 'Go module proxy 上游；只读缓存，不代理私有模块鉴权。',
     goproxyPrefetchHint: '在「预拉取」页粘贴 go.mod 或 go.sum；仅展开文件中显式版本，完整闭包可用 go mod download 经本代理灌满。',
-    huggingfaceUpstreamHint: 'Hub API / 文件上游（默认 hf-mirror.com）；公开仓匿名，gated 填组织 Token。',
+    huggingfaceUpstreamHint: 'Hub API / 文件上游（默认 huggingface.co）；公开仓匿名，gated 填组织 Token。',
     huggingfacePrefetchHint: '在「预拉取」页粘贴 owner/repo 或 datasets/owner/repo（可 @revision）；将按 tree 展开全部文件。',
     mavenUpstreamHint: 'Maven2 仓库上游（默认阿里云 central）；只读缓存，不支持 deploy。',
     mavenPrefetchHint: '在「预拉取」页粘贴 pom.xml 或多行 group:artifact:version；将展开 pom+jar 依赖闭包（跳过 test）。',
