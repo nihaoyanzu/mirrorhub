@@ -37,9 +37,39 @@ func IsReservedProxyPath(path string) bool {
 		strings.HasPrefix(path, "/api/resolve-cache/"):
 		// Hugging Face Hub，避免 npm 抢路由
 		return true
+	case strings.Contains(path, "/maven-metadata.xml") ||
+		strings.HasPrefix(path, "/maven2/") || path == "/maven2":
+		// Maven2 布局，避免 npm 抢路由
+		return true
 	default:
+		// 双保险：形如 …/artifact/version/artifact-version.* 的 Maven 制品路径
+		if looksLikeMavenArtifactPath(path) {
+			return true
+		}
 		return false
 	}
+}
+
+func looksLikeMavenArtifactPath(path string) bool {
+	path = normalizePath(path)
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 4 {
+		return false
+	}
+	file := parts[len(parts)-1]
+	artifact := parts[len(parts)-3]
+	lower := strings.ToLower(file)
+	if !strings.HasPrefix(file, artifact+"-") {
+		return false
+	}
+	for _, ext := range []string{".pom", ".jar", ".aar", ".war", ".module", ".zip",
+		".pom.sha1", ".jar.sha1", ".pom.md5", ".jar.md5",
+		".pom.sha256", ".jar.sha256", ".pom.sha512", ".jar.sha512"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsTarballURL 判断绝对 URL 是否像 npm tarball（预取选平台用）。

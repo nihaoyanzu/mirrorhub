@@ -350,7 +350,7 @@ func defaultRuntime() RuntimeSettings {
 				},
 			},
 			"npm": {
-				Enabled:      false,
+				Enabled:      true,
 				Upstream:     "https://registry.npmjs.org",
 				FileUpstream: "https://registry.npmjs.org",
 				Download: DownloadConfig{
@@ -358,7 +358,7 @@ func defaultRuntime() RuntimeSettings {
 				},
 			},
 			"docker": {
-				Enabled:          false,
+				Enabled:          true,
 				Upstream:         "https://registry-1.docker.io",
 				FileUpstream:     "https://registry-1.docker.io",
 				MetadataUpstream: "https://auth.docker.io",
@@ -367,7 +367,7 @@ func defaultRuntime() RuntimeSettings {
 				},
 			},
 			"goproxy": {
-				Enabled:          false,
+				Enabled:          true,
 				Upstream:         "https://goproxy.cn",
 				FileUpstream:     "https://goproxy.cn",
 				MetadataUpstream: "https://goproxy.cn",
@@ -376,9 +376,17 @@ func defaultRuntime() RuntimeSettings {
 				},
 			},
 			"huggingface": {
-				Enabled:      false,
+				Enabled:      true,
 				Upstream:     "https://hf-mirror.com",
 				FileUpstream: "https://hf-mirror.com",
+				Download: DownloadConfig{
+					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+				},
+			},
+			"maven": {
+				Enabled:      false,
+				Upstream:     "https://maven.aliyun.com/repository/central",
+				FileUpstream: "https://maven.aliyun.com/repository/central",
 				Download: DownloadConfig{
 					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 				},
@@ -499,10 +507,10 @@ func applyDefaults(cfg *Config) {
 		p.RateLimit = nil
 		cfg.Platforms["pypi"] = p
 	}
-	// 旧库无 npm 条目时补齐（默认关闭，避免抢占未知路径）
+	// 旧库无 npm 条目时补齐（默认开启）
 	if _, ok := cfg.Platforms["npm"]; !ok {
 		cfg.Platforms["npm"] = PlatformConfig{
-			Enabled:      false,
+			Enabled:      true,
 			Upstream:     "https://registry.npmjs.org",
 			FileUpstream: "https://registry.npmjs.org",
 			Download: DownloadConfig{
@@ -529,10 +537,10 @@ func applyDefaults(cfg *Config) {
 		p.RateLimit = nil
 		cfg.Platforms["npm"] = p
 	}
-	// 旧库无 docker 条目时补齐（默认关闭）
+	// 旧库无 docker 条目时补齐（默认开启）
 	if _, ok := cfg.Platforms["docker"]; !ok {
 		cfg.Platforms["docker"] = PlatformConfig{
-			Enabled:          false,
+			Enabled:          true,
 			Upstream:         "https://registry-1.docker.io",
 			FileUpstream:     "https://registry-1.docker.io",
 			MetadataUpstream: "https://auth.docker.io",
@@ -563,10 +571,10 @@ func applyDefaults(cfg *Config) {
 		p.RateLimit = nil
 		cfg.Platforms["docker"] = p
 	}
-	// 旧库无 goproxy 条目时补齐（默认关闭）
+	// 旧库无 goproxy 条目时补齐（默认开启）
 	if _, ok := cfg.Platforms["goproxy"]; !ok {
 		cfg.Platforms["goproxy"] = PlatformConfig{
-			Enabled:          false,
+			Enabled:          true,
 			Upstream:         "https://goproxy.cn",
 			FileUpstream:     "https://goproxy.cn",
 			MetadataUpstream: "https://goproxy.cn",
@@ -597,10 +605,10 @@ func applyDefaults(cfg *Config) {
 		p.RateLimit = nil
 		cfg.Platforms["goproxy"] = p
 	}
-	// 旧库无 huggingface 条目时补齐（默认关闭）
+	// 旧库无 huggingface 条目时补齐（默认开启）
 	if _, ok := cfg.Platforms["huggingface"]; !ok {
 		cfg.Platforms["huggingface"] = PlatformConfig{
-			Enabled:      false,
+			Enabled:      true,
 			Upstream:     "https://hf-mirror.com",
 			FileUpstream: "https://hf-mirror.com",
 			Download: DownloadConfig{
@@ -626,6 +634,36 @@ func applyDefaults(cfg *Config) {
 		}
 		p.RateLimit = nil
 		cfg.Platforms["huggingface"] = p
+	}
+	// 旧库无 maven 条目时补齐（默认关闭）
+	if _, ok := cfg.Platforms["maven"]; !ok {
+		cfg.Platforms["maven"] = PlatformConfig{
+			Enabled:      false,
+			Upstream:     "https://maven.aliyun.com/repository/central",
+			FileUpstream: "https://maven.aliyun.com/repository/central",
+			Download: DownloadConfig{
+				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+			},
+		}
+	}
+	if p, ok := cfg.Platforms["maven"]; ok {
+		if p.Download.Concurrency <= 0 {
+			p.Download.Concurrency = 16
+		}
+		if p.Download.ChunkSize <= 0 {
+			p.Download.ChunkSize = 5 * 1024 * 1024
+		}
+		if p.Download.MinSize <= 0 {
+			p.Download.MinSize = 100 * 1024
+		}
+		if p.Upstream == "" {
+			p.Upstream = "https://maven.aliyun.com/repository/central"
+		}
+		if p.FileUpstream == "" {
+			p.FileUpstream = p.Upstream
+		}
+		p.RateLimit = nil
+		cfg.Platforms["maven"] = p
 	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"

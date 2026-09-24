@@ -24,6 +24,11 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 	cacheKey := cache.KeyFromURL(origURL)
 	expectedSHA := downloader.LookupDigest(origURL)
 
+	// maven：制品按 URL 定键（与预取一致）
+	if m.Platform == "maven" {
+		cacheKey = "maven:pkg:" + cache.KeyFromURL(origURL)
+	}
+
 	// docker blob：按 digest 永久缓存；回源注入 Bearer
 	if m.Platform == "docker" {
 		if _, dig, ok := dockerhandler.ParseBlobPath(r.URL.Path); ok {
@@ -100,9 +105,9 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 	fetchURL := origURL
 	var size int64 = -1
 	hasSize := false
-	// npm / docker / goproxy 交互冷路径跳过上游 HEAD
+	// npm / docker / goproxy / maven 交互冷路径跳过上游 HEAD
 	// huggingface 不跳过：需 Content-Length / X-Linked-Size 校验，避免慢速 CDN 截断后误缓存
-	skipHead := (m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy") && !prefetch
+	skipHead := (m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy" || m.Platform == "maven") && !prefetch
 	if !skipHead {
 		hs, headCT, finalURL, headErr := s.dl.Head(r.Context(), origURL, headers)
 		if headErr == nil {

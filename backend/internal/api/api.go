@@ -21,6 +21,7 @@ import (
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
 	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
+	mavenhandler "github.com/livehl/mirrorhub/internal/handlers/maven"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
@@ -360,6 +361,18 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 		case hfhandler.LookLikeHFRepoList(body.Text):
 			parsed, skip := hfhandler.ParseRepoList(body.Text)
 			items = append(items, parsed...)
+			skipped = skip
+		case mavenhandler.LookLikePom(body.Text):
+			coords, skip := mavenhandler.ParsePomDependencies(body.Text)
+			for _, c := range coords {
+				items = append(items, c.String())
+			}
+			skipped = skip
+		case mavenhandler.LookLikeGAVList(body.Text):
+			coords, skip := mavenhandler.ParseGAVList(body.Text)
+			for _, c := range coords {
+				items = append(items, c.String())
+			}
 			skipped = skip
 		case dockerhandler.LookLikeImageList(body.Text):
 			refs, skip := dockerhandler.ParseImageList(body.Text)

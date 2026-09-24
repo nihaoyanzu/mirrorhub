@@ -248,4 +248,5 @@ Rate limits: **System → pull rate** (aimed at prefetch; interactive stays pref
 | Docker | ✅ | `registry-mirrors` → `http://localhost:18081` |
 | Go modules | ✅ | `export GOPROXY=http://localhost:18081,direct` |
 | HuggingFace | ✅ | `export HF_ENDPOINT=http://localhost:18081` + `HF_HUB_DISABLE_XET=1` |
+| Maven / Gradle | ✅ | `settings.xml` mirror or Gradle `maven { url }` → `http://localhost:18081/` |
 | R / CRAN | ☐ | `options(repos = c(CRAN = "http://localhost:18081/"))` |

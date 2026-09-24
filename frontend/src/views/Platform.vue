@@ -17,7 +17,7 @@ const saving = ref(false)
 const testing = ref(false)
 const dirty = ref(false)
 const tab = ref<'access' | 'download' | 'prefetch' | 'cache'>('access')
-type ModuleId = 'pypi' | 'npm' | 'docker' | 'goproxy' | 'huggingface'
+type ModuleId = 'pypi' | 'npm' | 'docker' | 'goproxy' | 'huggingface' | 'maven'
 const moduleId = ref<ModuleId>('pypi')
 const showClearModal = ref(false)
 const clearing = ref(false)
@@ -69,7 +69,7 @@ const tabs = computed(() => {
     { id: 'access' as const, label: t('platform.tabAccess') },
     { id: 'download' as const, label: t('platform.tabDownload') },
   ]
-  if (moduleId.value === 'pypi' || moduleId.value === 'docker' || moduleId.value === 'goproxy' || moduleId.value === 'huggingface') {
+  if (moduleId.value === 'pypi' || moduleId.value === 'docker' || moduleId.value === 'goproxy' || moduleId.value === 'huggingface' || moduleId.value === 'maven') {
     base.push({ id: 'prefetch' as const, label: t('platform.tabPrefetch') })
   }
   base.push({ id: 'cache' as const, label: t('platform.tabCache') })
@@ -82,6 +82,7 @@ const moduleOptions = [
   { id: 'docker' as const, labelKey: 'platform.moduleDocker' },
   { id: 'goproxy' as const, labelKey: 'platform.moduleGoproxy' },
   { id: 'huggingface' as const, labelKey: 'platform.moduleHuggingFace' },
+  { id: 'maven' as const, labelKey: 'platform.moduleMaven' },
 ] as const
 
 const enableLabel = computed(() => {
@@ -89,6 +90,7 @@ const enableLabel = computed(() => {
   if (moduleId.value === 'docker') return t('platform.enableDocker')
   if (moduleId.value === 'goproxy') return t('platform.enableGoproxy')
   if (moduleId.value === 'huggingface') return t('platform.enableHuggingFace')
+  if (moduleId.value === 'maven') return t('platform.enableMaven')
   return t('platform.enablePyPI')
 })
 
@@ -136,7 +138,7 @@ function syncTabFromRoute() {
   }
   const mod = String(route.query.module || '')
   if (
-    (mod === 'pypi' || mod === 'npm' || mod === 'docker' || mod === 'goproxy' || mod === 'huggingface') &&
+    (mod === 'pypi' || mod === 'npm' || mod === 'docker' || mod === 'goproxy' || mod === 'huggingface' || mod === 'maven') &&
     mod !== moduleId.value
   ) {
     snapshotCurrentPlatform()
@@ -258,6 +260,17 @@ async function load() {
       chunk_size: huggingface?.download?.chunk_size ?? 5242880,
       min_size: huggingface?.download?.min_size ?? 102400,
     }
+    const maven = cfg.platforms?.maven
+    platformDrafts.maven = {
+      enabled: !!maven?.enabled,
+      upstream: maven?.upstream || 'https://maven.aliyun.com/repository/central',
+      file_upstream: maven?.file_upstream || maven?.upstream || 'https://maven.aliyun.com/repository/central',
+      metadata_upstream: '',
+      upstream_token: '',
+      concurrency: maven?.download?.concurrency ?? 16,
+      chunk_size: maven?.download?.chunk_size ?? 5242880,
+      min_size: maven?.download?.min_size ?? 102400,
+    }
     applyPlatformDraft(moduleId.value)
 
     if (cfg.cache) {
@@ -292,7 +305,7 @@ async function save() {
   try {
     snapshotCurrentPlatform()
     const platforms: Record<string, unknown> = {}
-    for (const id of ['pypi', 'npm', 'docker', 'goproxy', 'huggingface'] as const) {
+    for (const id of ['pypi', 'npm', 'docker', 'goproxy', 'huggingface', 'maven'] as const) {
       const d = platformDrafts[id]
       if (!d) continue
       const row: Record<string, unknown> = {
@@ -456,6 +469,7 @@ onMounted(() => {
         <p v-else-if="moduleId === 'docker'" class="mb-3 text-xs text-muted">{{ t('platform.dockerUpstreamHint') }}</p>
         <p v-else-if="moduleId === 'goproxy'" class="mb-3 text-xs text-muted">{{ t('platform.goproxyUpstreamHint') }}</p>
         <p v-else-if="moduleId === 'huggingface'" class="mb-3 text-xs text-muted">{{ t('platform.huggingfaceUpstreamHint') }}</p>
+        <p v-else-if="moduleId === 'maven'" class="mb-3 text-xs text-muted">{{ t('platform.mavenUpstreamHint') }}</p>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
             <label class="ui-label">{{
@@ -465,7 +479,9 @@ onMounted(() => {
                   ? t('platform.moduleUpstream')
                   : moduleId === 'huggingface'
                     ? t('platform.hubUpstream')
-                    : t('platform.indexUpstream')
+                    : moduleId === 'maven'
+                      ? t('platform.mavenRepoUpstream')
+                      : t('platform.indexUpstream')
             }}</label>
             <input v-model="form.upstream" class="ui-input" />
           </div>
@@ -477,7 +493,9 @@ onMounted(() => {
                   ? t('platform.moduleFileUpstream')
                   : moduleId === 'huggingface'
                     ? t('platform.hubFileUpstream')
-                    : t('platform.fileUpstream')
+                    : moduleId === 'maven'
+                      ? t('platform.mavenFileUpstream')
+                      : t('platform.fileUpstream')
             }}</label>
             <input v-model="form.file_upstream" class="ui-input" />
           </div>
@@ -578,6 +596,7 @@ onMounted(() => {
         <p v-if="moduleId === 'npm'" class="text-sm text-muted">{{ t('platform.npmPrefetchHint') }}</p>
         <p v-else-if="moduleId === 'goproxy'" class="text-sm text-muted">{{ t('platform.goproxyPrefetchHint') }}</p>
         <p v-else-if="moduleId === 'huggingface'" class="text-sm text-muted">{{ t('platform.huggingfacePrefetchHint') }}</p>
+        <p v-else-if="moduleId === 'maven'" class="text-sm text-muted">{{ t('platform.mavenPrefetchHint') }}</p>
         <template v-else-if="moduleId === 'docker'">
           <p class="mb-4 text-sm text-muted">{{ t('platform.dockerPrefetchHint') }}</p>
           <div class="sm:col-span-3">

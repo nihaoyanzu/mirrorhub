@@ -18,6 +18,7 @@ import (
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	goproxyhandler "github.com/livehl/mirrorhub/internal/handlers/goproxy"
 	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
+	mavenhandler "github.com/livehl/mirrorhub/internal/handlers/maven"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/scheduler"
@@ -131,6 +132,12 @@ func platformNameForItem(item string) string {
 	if _, ok := hfhandler.ParseRepoRef(item); ok {
 		return "huggingface"
 	}
+	if mavenhandler.IsMavenArtifactURL(item) {
+		return "maven"
+	}
+	if _, ok := mavenhandler.ParseCoordinate(item); ok {
+		return "maven"
+	}
 	if _, ok := dockerhandler.ParseImageRef(item); ok {
 		return "docker"
 	}
@@ -147,6 +154,8 @@ func platformConfigForURL(cfg config.Config, rawURL string) (string, config.Plat
 		name = "goproxy"
 	} else if hfhandler.IsHuggingFaceArtifactURL(rawURL) {
 		name = "huggingface"
+	} else if mavenhandler.IsMavenArtifactURL(rawURL) {
+		name = "maven"
 	}
 	pcfg, ok := cfg.Platforms[name]
 	if !ok {
@@ -171,6 +180,9 @@ func (s *Service) expandItem(ctx context.Context, item string) ([]string, error)
 	}
 	if ref, ok := goproxyhandler.ParseModuleRef(item); ok {
 		return s.expandGoproxyModule(ctx, ref)
+	}
+	if c, ok := mavenhandler.ParseCoordinate(item); ok {
+		return s.expandMavenCoordinate(ctx, c)
 	}
 	// HF owner/repo 与 Docker image 形似；HF 在前，避免误进 docker 展开
 	if ref, ok := hfhandler.ParseRepoRef(item); ok {
@@ -422,6 +434,106 @@ func (s *Service) expandHuggingFaceRepo(ctx context.Context, ref hfhandler.RepoR
 	return urls, nil
 }
 
+func (s *Service) expandMavenCoordinate(ctx context.Context, root mavenhandler.Coordinate) ([]string, error) {
+	cfg := s.cfg.Get()
+	pcfg, ok := cfg.Platforms["maven"]
+	if !ok || !pcfg.Enabled {
+		return nil, fmt.Errorf("maven 模块未启用")
+	}
+	up := strings.TrimRight(strings.TrimSpace(pcfg.FileUpstream), "/")
+	if up == "" {
+		up = strings.TrimRight(strings.TrimSpace(pcfg.Upstream), "/")
+	}
+	if up == "" {
+		up = "https://maven.aliyun.com/repository/central"
+	}
+	maxPkg := cfg.Scheduler.Prefetch.MaxPackages
+	if maxPkg <= 0 {
+		maxPkg = 200
+	}
+
+	type node struct {
+		c mavenhandler.Coordinate
+	}
+	queue := []node{{c: root}}
+	seen := map[string]struct{}{}
+	var allURLs []string
+	urlSeen := map[string]struct{}{}
+
+	addURL := func(u string) {
+		if u == "" {
+			return
+		}
+		if _, ok := urlSeen[u]; ok {
+			return
+		}
+		urlSeen[u] = struct{}{}
+		allURLs = append(allURLs, u)
+	}
+
+	for len(queue) > 0 {
+		if len(seen) >= maxPkg {
+			s.log.Warn("prefetch maven closure hit max packages", zap.Int("max", maxPkg))
+			break
+		}
+		n := queue[0]
+		queue = queue[1:]
+		key := n.c.String()
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		pomURL := mavenhandler.ArtifactURL(up, n.c.GroupID, n.c.ArtifactID, n.c.Version, "pom")
+		addURL(pomURL)
+		pack := strings.ToLower(strings.TrimSpace(n.c.Packaging))
+		if pack == "" {
+			pack = "jar"
+		}
+		if pack != "pom" {
+			addURL(mavenhandler.ArtifactURL(up, n.c.GroupID, n.c.ArtifactID, n.c.Version, pack))
+		}
+
+		// 拉取 pom 写入索引缓存并展开 compile/runtime 依赖
+		status, respHeader, body, getErr := s.dl.ProxyBytes(ctx, http.MethodGet, pomURL, nil, nil, "maven", true)
+		if getErr != nil || status < 200 || status >= 300 {
+			if s.log != nil {
+				s.log.Warn("prefetch maven pom skip", zap.String("url", pomURL), zap.Int("status", status), zap.Error(getErr))
+			}
+			continue
+		}
+		ct := mavenhandler.DetectContentType("/.pom", respHeader.Get("Content-Type"), body)
+		pkgKey := "maven:pkg:" + cache.KeyFromURL(pomURL)
+		if _, err := s.cache.PutBytes(pkgKey, body, ct, cfg.Cache.PackageTTLSeconds, cache.Meta{
+			SourceURL:    pomURL,
+			Kind:         "package",
+			UpstreamETag: respHeader.Get("ETag"),
+		}); err != nil && s.log != nil {
+			s.log.Warn("maven pom cache put failed", zap.String("key", pkgKey), zap.Error(err))
+		}
+
+		deps, _ := mavenhandler.ParsePomDependencies(string(body))
+		for _, d := range deps {
+			scope := strings.ToLower(strings.TrimSpace(d.Scope))
+			if scope != "" && scope != "compile" && scope != "runtime" {
+				continue
+			}
+			dk := d.String()
+			if _, dup := seen[dk]; dup {
+				continue
+			}
+			queue = append(queue, node{c: d})
+		}
+	}
+
+	s.log.Info("prefetch maven resolved",
+		zap.String("root", root.String()),
+		zap.Int("coords", len(seen)),
+		zap.Int("files", len(allURLs)),
+	)
+	return allURLs, nil
+}
+
 func injectPrefetchHFAuth(headers http.Header, pcfg config.PlatformConfig) {
 	tok := strings.TrimSpace(pcfg.UpstreamToken)
 	if tok == "" {
@@ -630,6 +742,9 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 		if platName == "huggingface" {
 			cacheKey = "hf:pkg:" + cache.KeyFromURL(rawURL)
 			injectPrefetchHFAuth(headers, pcfg)
+		}
+		if platName == "maven" {
+			cacheKey = "maven:pkg:" + cache.KeyFromURL(rawURL)
 		}
 		_, err := s.dl.GetOrDownload(cctx, downloader.Options{
 			URL:            rawURL,

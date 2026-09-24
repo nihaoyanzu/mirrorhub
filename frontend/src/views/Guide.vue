@@ -162,6 +162,34 @@ const huggingfaceSnippets = computed(() => [
   },
 ])
 
+const mavenSnippets = computed(() => [
+  {
+    key: 'mavenSettings',
+    title: t('guide.mavenSettings'),
+    text: `<settings>
+  <mirrors>
+    <mirror>
+      <id>mirrorhub</id>
+      <mirrorOf>*</mirrorOf>
+      <url>${baseURL.value}/</url>
+    </mirror>
+  </mirrors>
+</settings>`,
+  },
+  {
+    key: 'mavenGradle',
+    title: t('guide.mavenGradle'),
+    text: `repositories {
+  maven { url = uri("${baseURL.value}/") }
+}`,
+  },
+  {
+    key: 'mavenNote',
+    title: t('guide.mavenNote'),
+    text: t('guide.mavenNoteBody'),
+  },
+])
+
 function syncTab() {
   const ids = enabledModules.value.map((m) => m.id)
   if (!ids.length) {
@@ -196,6 +224,7 @@ function moduleTitle(id: string) {
   if (id === 'docker') return 'Docker'
   if (id === 'goproxy') return 'Go'
   if (id === 'huggingface') return 'Hugging Face'
+  if (id === 'maven') return 'Maven'
   return id
 }
 
@@ -208,10 +237,11 @@ onMounted(async () => {
       proxy_port: '18081',
       modules: [
         { id: 'pypi', enabled: true },
-        { id: 'npm', enabled: false },
-        { id: 'docker', enabled: false },
-        { id: 'goproxy', enabled: false },
-        { id: 'huggingface', enabled: false },
+        { id: 'npm', enabled: true },
+        { id: 'docker', enabled: true },
+        { id: 'goproxy', enabled: true },
+        { id: 'huggingface', enabled: true },
+        { id: 'maven', enabled: false },
       ],
     }
   } finally {
@@ -445,6 +475,34 @@ onMounted(async () => {
                   <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
                   <button
                     v-if="item.key !== 'huggingfaceNote'"
+                    type="button"
+                    class="ui-btn-ghost !px-2 !py-1 text-xs"
+                    @click="copyText(item.key, item.text)"
+                  >
+                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
+                  </button>
+                </div>
+                <pre
+                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
+                >{{ item.text }}</pre>
+              </article>
+            </div>
+          </section>
+
+          <section v-else-if="activeTab === 'maven'" class="ui-panel overflow-hidden">
+            <div class="border-b border-line p-4 sm:p-5">
+              <p class="text-xs text-muted">{{ t('guide.mavenHint') }}</p>
+            </div>
+            <div class="grid gap-3 p-4 sm:p-5">
+              <article
+                v-for="item in mavenSnippets"
+                :key="item.key"
+                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
+              >
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
+                  <button
+                    v-if="item.key !== 'mavenNote'"
                     type="button"
                     class="ui-btn-ghost !px-2 !py-1 text-xs"
                     @click="copyText(item.key, item.text)"

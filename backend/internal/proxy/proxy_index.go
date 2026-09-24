@@ -16,6 +16,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/config"
 	dockerhandler "github.com/livehl/mirrorhub/internal/handlers/docker"
 	hfhandler "github.com/livehl/mirrorhub/internal/handlers/huggingface"
+	mavenhandler "github.com/livehl/mirrorhub/internal/handlers/maven"
 	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	"github.com/livehl/mirrorhub/internal/platform"
 	"github.com/livehl/mirrorhub/internal/router"
@@ -323,6 +324,9 @@ func indexContentType(platName, upstreamCT, accept string, body []byte) string {
 	}
 	if platName == "huggingface" {
 		return hfhandler.DetectContentType("", upstreamCT, body)
+	}
+	if platName == "maven" {
+		return mavenhandler.DetectContentType("", upstreamCT, body)
 	}
 	return platform.DetectContentType(upstreamCT, body)
 }

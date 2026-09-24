@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -92,6 +93,9 @@ func main() {
 	adminSrv := api.New(cfgMgr, cacheMgr, dl, limiters, sched, pf, authSvc, tr, log, boot.WebDir)
 	adminSrv.StartCatalog(ctx)
 
+	cfg = cfgMgr.Get()
+	logPlatforms(log, cfg)
+
 	proxyHTTP := &http.Server{Addr: cfg.Server.ProxyAddr, Handler: proxySrv.Routes()}
 	adminHTTP := &http.Server{Addr: cfg.Server.AdminAddr, Handler: adminSrv.Routes()}
 
@@ -121,6 +125,27 @@ func main() {
 	defer shutdownCancel()
 	_ = proxyHTTP.Shutdown(shutdownCtx)
 	_ = adminHTTP.Shutdown(shutdownCtx)
+}
+
+func logPlatforms(log *zap.Logger, cfg config.Config) {
+	names := make([]string, 0, len(cfg.Platforms))
+	for name := range cfg.Platforms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	enabled := make([]string, 0, len(names))
+	disabled := make([]string, 0, len(names))
+	for _, name := range names {
+		if cfg.Platforms[name].Enabled {
+			enabled = append(enabled, name)
+		} else {
+			disabled = append(disabled, name)
+		}
+	}
+	log.Info("platforms",
+		zap.Strings("enabled", enabled),
+		zap.Strings("disabled", disabled),
+	)
 }
 
 func loadDotEnv() {

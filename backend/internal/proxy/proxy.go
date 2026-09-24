@@ -24,6 +24,7 @@ import (
 	_ "github.com/livehl/mirrorhub/internal/platform/docker"      // 注册 Docker 平台
 	_ "github.com/livehl/mirrorhub/internal/platform/goproxy"     // 注册 Go modules 平台
 	_ "github.com/livehl/mirrorhub/internal/platform/huggingface" // 注册 Hugging Face 平台
+	_ "github.com/livehl/mirrorhub/internal/platform/maven"       // 注册 Maven/Gradle 平台（须在 npm 之前）
 	_ "github.com/livehl/mirrorhub/internal/platform/npm"         // 注册 npm 平台
 	_ "github.com/livehl/mirrorhub/internal/platform/pypi"        // 注册 PyPI 平台
 	"github.com/livehl/mirrorhub/internal/ratelimit"
@@ -108,8 +109,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	m := mr.Match
 	pcfg := cfg.Platforms[mr.Platform.Name()]
 
-	// npm / docker / goproxy / huggingface 只读代理
-	if m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy" || m.Platform == "huggingface" {
+	// npm / docker / goproxy / huggingface / maven 只读代理
+	if m.Platform == "npm" || m.Platform == "docker" || m.Platform == "goproxy" ||
+		m.Platform == "huggingface" || m.Platform == "maven" {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
 		default:
