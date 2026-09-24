@@ -12,6 +12,7 @@ import (
 
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
+	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	"github.com/livehl/mirrorhub/internal/platform"
 	"github.com/livehl/mirrorhub/internal/router"
 )
@@ -27,6 +28,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	defer release()
 
 	cacheKey := m.Platform + ":index:" + cache.KeyFromURL(m.TargetURL)
+	clientAccept := r.Header.Get("Accept")
+	// npm：按 abbreviated / full 分键，保留客户端 Accept 回源（冷启动用小文档）
+	if m.Platform == "npm" {
+		cacheKey += ":" + npmhandler.IndexCacheVariant(clientAccept)
+	}
 
 	// ---------- 1. 缓存命中（未过期）→ 直接返回 ----------
 	if r.Method == http.MethodGet {
@@ -40,6 +46,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	// 客户端条件请求针对我们改写后的 ETag，不能原样转给上游
 	headers.Del("If-None-Match")
 	headers.Del("If-Modified-Since")
+	if m.Platform == "npm" {
+		if npmhandler.PrefersAbbreviated(clientAccept) {
+			headers.Set("Accept", "application/vnd.npm.install-v1+json")
+		} else if strings.TrimSpace(headers.Get("Accept")) == "" {
+			headers.Set("Accept", "application/json")
+		}
+	}
 
 	var staleEntry *cache.Entry
 	if r.Method == http.MethodGet {
@@ -55,7 +68,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 			if len(result.body) > 0 && result.contentType != "" {
 				body := result.body
 				body, _ = platform.MaybeGunzip(body)
-				ct := platform.DetectContentType(result.contentType, body)
+				ct := indexContentType(m.Platform, result.contentType, clientAccept, body)
 				if _, err := s.cache.PutBytes(cacheKey, body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
 					SourceURL:    m.TargetURL,
 					Kind:         "index",
@@ -64,7 +77,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 					s.log.Warn("index cache put failed", zap.String("key", cacheKey), zap.Error(err))
 				}
 				rememberIndexDigests(body, m.TargetURL)
-				tr := plat.TransformIndex(body, ct, cfg, r.Header.Get("Accept"), m.TargetURL)
+				tr := plat.TransformIndex(body, ct, cfg, clientAccept, m.TargetURL)
 				w.Header().Set("Content-Length", strconv.Itoa(len(tr.Body)))
 				w.Header().Set("ETag", tr.ETag)
 				writeProxyHeaders(w, http.Header{}, tr.ContentType, http.StatusOK, "MISS", "index", boost)
@@ -94,7 +107,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 	}
 
 	body, _ = platform.MaybeGunzip(body)
-	ct := platform.DetectContentType(respHeader.Get("Content-Type"), body)
+	ct := indexContentType(m.Platform, respHeader.Get("Content-Type"), clientAccept, body)
 	if r.Method == http.MethodGet && status >= 200 && status < 300 {
 		if _, err := s.cache.PutBytes(cacheKey, body, ct, cfg.Cache.IndexTTLSeconds, cache.Meta{
 			SourceURL:    m.TargetURL,
@@ -105,7 +118,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, m *router.M
 		}
 	}
 	rememberIndexDigests(body, m.TargetURL)
-	result := plat.TransformIndex(body, ct, cfg, r.Header.Get("Accept"), m.TargetURL)
+	result := plat.TransformIndex(body, ct, cfg, clientAccept, m.TargetURL)
 	if matchETag(r.Header.Get("If-None-Match"), result.ETag) {
 		w.Header().Set("ETag", result.ETag)
 		w.Header().Set("X-Cache", "MISS")
@@ -194,7 +207,7 @@ func (s *Server) doRevalidation(cacheKey, targetURL, platName string, stale *cac
 		}
 		// 内容已变：交给调用方写入新缓存，避免再 GET 一次
 		result.body = body
-		result.contentType = platform.DetectContentType(respHeader.Get("Content-Type"), body)
+		result.contentType = respHeader.Get("Content-Type")
 		result.upstreamETag = respHeader.Get("ETag")
 	}()
 	return result
@@ -203,9 +216,10 @@ func (s *Server) doRevalidation(cacheKey, targetURL, platName string, stale *cac
 // serveRevalidated 从续期结果响应客户端
 func (s *Server) serveRevalidated(w http.ResponseWriter, r *http.Request, result *revalResult, plat platform.Platform, cfg config.Config, boost bool) (string, error) {
 	data, _ := platform.MaybeGunzip(result.body)
-	ct := platform.DetectContentType(result.contentType, data)
+	accept := r.Header.Get("Accept")
+	ct := indexContentType(plat.Name(), result.contentType, accept, data)
 	rememberIndexDigests(data, result.entry.SourceURL)
-	tr := plat.TransformIndex(data, ct, cfg, r.Header.Get("Accept"), result.entry.SourceURL)
+	tr := plat.TransformIndex(data, ct, cfg, accept, result.entry.SourceURL)
 	if matchETag(r.Header.Get("If-None-Match"), tr.ETag) {
 		w.Header().Set("ETag", tr.ETag)
 		w.Header().Set("X-Cache", "REVALIDATED")
@@ -236,9 +250,10 @@ func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry 
 		return "na", err
 	}
 	data, _ = platform.MaybeGunzip(data)
-	ct := platform.DetectContentType(entry.ContentType, data)
+	accept := r.Header.Get("Accept")
+	ct := indexContentType(plat.Name(), entry.ContentType, accept, data)
 	rememberIndexDigests(data, entry.SourceURL)
-	tr := plat.TransformIndex(data, ct, cfg, r.Header.Get("Accept"), entry.SourceURL)
+	tr := plat.TransformIndex(data, ct, cfg, accept, entry.SourceURL)
 	if matchETag(r.Header.Get("If-None-Match"), tr.ETag) {
 		w.Header().Set("ETag", tr.ETag)
 		w.Header().Set("X-Cache", cacheLabel)
@@ -255,4 +270,12 @@ func (s *Server) serveCachedIndex(w http.ResponseWriter, r *http.Request, entry 
 	}
 	_, _ = w.Write(tr.Body)
 	return "hit", nil
+}
+
+// indexContentType 选择索引缓存/响应用的 Content-Type；npm 避免被 PyPI MIME 嗅探污染。
+func indexContentType(platName, upstreamCT, accept string, body []byte) string {
+	if platName == "npm" {
+		return npmhandler.DetectJSONContentType(upstreamCT, accept, body)
+	}
+	return platform.DetectContentType(upstreamCT, body)
 }

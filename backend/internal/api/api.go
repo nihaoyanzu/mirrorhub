@@ -18,6 +18,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
+	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
 	"github.com/livehl/mirrorhub/internal/prefetch"
@@ -336,9 +337,15 @@ func (s *Server) postPrefetch(w http.ResponseWriter, r *http.Request) {
 	items := append([]string{}, body.URLs...)
 	var skipped []string
 	if strings.TrimSpace(body.Text) != "" {
-		parsed, skip := pypihandler.ParseDependencyText(body.Text)
-		items = append(items, parsed...)
-		skipped = skip
+		if npmhandler.LookLikeLockfile(body.Text) {
+			parsed, skip := npmhandler.ParseLockfile(body.Text)
+			items = append(items, parsed...)
+			skipped = skip
+		} else {
+			parsed, skip := pypihandler.ParseDependencyText(body.Text)
+			items = append(items, parsed...)
+			skipped = skip
+		}
 	}
 	// 去重保序
 	seen := map[string]struct{}{}

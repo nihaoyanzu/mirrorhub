@@ -15,6 +15,7 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
+	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/scheduler"
 )
@@ -97,10 +98,32 @@ func (s *Service) drainManual(ctx context.Context) {
 }
 
 func (s *Service) failResolve(item string, err error) {
-	taskID := s.sched.Begin("pypi", item, scheduler.PriorityPrefetch, false, false)
+	plat := platformNameForItem(item)
+	taskID := s.sched.Begin(plat, item, scheduler.PriorityPrefetch, false, false)
 	s.sched.MarkRunning(taskID)
 	s.sched.End(taskID, err)
 	s.log.Warn("prefetch resolve failed", zap.String("item", item), zap.Error(err))
+}
+
+func platformNameForItem(item string) string {
+	if npmhandler.IsTarballURL(item) {
+		return "npm"
+	}
+	return "pypi"
+}
+
+func platformConfigForURL(cfg config.Config, rawURL string) (string, config.PlatformConfig) {
+	name := "pypi"
+	if npmhandler.IsTarballURL(rawURL) {
+		name = "npm"
+	}
+	pcfg, ok := cfg.Platforms[name]
+	if !ok {
+		return name, config.PlatformConfig{
+			Download: config.DownloadConfig{Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024},
+		}
+	}
+	return name, pcfg
 }
 
 func (s *Service) expandItem(ctx context.Context, item string) ([]string, error) {
@@ -363,17 +386,17 @@ func (s *Service) startOne(ctx context.Context, rawURL string) {
 			cancel()
 		}()
 		cfg := s.cfg.Get()
-		pypi := cfg.Platforms["pypi"]
-		taskID := s.sched.Begin("pypi", rawURL, scheduler.PriorityPrefetch, false, false)
+		platName, pcfg := platformConfigForURL(cfg, rawURL)
+		taskID := s.sched.Begin(platName, rawURL, scheduler.PriorityPrefetch, false, false)
 		_, err := s.dl.GetOrDownload(cctx, downloader.Options{
 			URL:            rawURL,
 			SourceURL:      rawURL,
 			CacheKey:       cache.KeyFromURL(rawURL),
-			Concurrency:    pypi.Download.Concurrency,
-			ChunkSize:      pypi.Download.ChunkSize,
-			MinSize:        pypi.Download.MinSize,
+			Concurrency:    pcfg.Download.Concurrency,
+			ChunkSize:      pcfg.Download.ChunkSize,
+			MinSize:        pcfg.Download.MinSize,
 			TTLSeconds:     cfg.Cache.PackageTTLSeconds,
-			Platform:       "pypi",
+			Platform:       platName,
 			Prefetch:       true,
 			TaskID:         taskID,
 			Headers:        http.Header{},

@@ -1,9 +1,9 @@
-// Package platform 定义平台抽象接口，使代理核心与具体平台（PyPI、HuggingFace 等）解耦。
+// Package platform 定义平台抽象接口，使代理核心与具体平台（PyPI、npm、HuggingFace 等）解耦。
 //
 // 新增平台只需：
 //  1. 实现 Platform 接口
 //  2. 在 init() 中调用 platform.Register()
-//  3. 在 main.go 中以 blank import 引入
+//  3. 在 proxy 包中以 blank import 引入
 package platform
 
 import (

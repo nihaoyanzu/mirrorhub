@@ -348,6 +348,14 @@ func defaultRuntime() RuntimeSettings {
 					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
 				},
 			},
+			"npm": {
+				Enabled:      false,
+				Upstream:     "https://registry.npmjs.org",
+				FileUpstream: "https://registry.npmjs.org",
+				Download: DownloadConfig{
+					Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+				},
+			},
 		},
 		RateLimit: RateLimitConfig{
 			BandwidthMbps: 0, MaxConcurrent: 20, MaxConnections: 80,
@@ -463,6 +471,36 @@ func applyDefaults(cfg *Config) {
 		}
 		p.RateLimit = nil
 		cfg.Platforms["pypi"] = p
+	}
+	// 旧库无 npm 条目时补齐（默认关闭，避免抢占未知路径）
+	if _, ok := cfg.Platforms["npm"]; !ok {
+		cfg.Platforms["npm"] = PlatformConfig{
+			Enabled:      false,
+			Upstream:     "https://registry.npmjs.org",
+			FileUpstream: "https://registry.npmjs.org",
+			Download: DownloadConfig{
+				Concurrency: 16, ChunkSize: 5 * 1024 * 1024, MinSize: 100 * 1024,
+			},
+		}
+	}
+	if p, ok := cfg.Platforms["npm"]; ok {
+		if p.Download.Concurrency <= 0 {
+			p.Download.Concurrency = 16
+		}
+		if p.Download.ChunkSize <= 0 {
+			p.Download.ChunkSize = 5 * 1024 * 1024
+		}
+		if p.Download.MinSize <= 0 {
+			p.Download.MinSize = 100 * 1024
+		}
+		if p.Upstream == "" {
+			p.Upstream = "https://registry.npmjs.org"
+		}
+		if p.FileUpstream == "" {
+			p.FileUpstream = p.Upstream
+		}
+		p.RateLimit = nil
+		cfg.Platforms["npm"] = p
 	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"

@@ -15,9 +15,11 @@ import (
 	"github.com/livehl/mirrorhub/internal/cache"
 	"github.com/livehl/mirrorhub/internal/config"
 	"github.com/livehl/mirrorhub/internal/downloader"
+	npmhandler "github.com/livehl/mirrorhub/internal/handlers/npm"
 	pypihandler "github.com/livehl/mirrorhub/internal/handlers/pypi"
 	"github.com/livehl/mirrorhub/internal/metrics"
 	"github.com/livehl/mirrorhub/internal/platform"
+	_ "github.com/livehl/mirrorhub/internal/platform/npm"  // 注册 npm 平台
 	_ "github.com/livehl/mirrorhub/internal/platform/pypi" // 注册 PyPI 平台
 	"github.com/livehl/mirrorhub/internal/ratelimit"
 	"github.com/livehl/mirrorhub/internal/router"
@@ -69,6 +71,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	m := mr.Match
 	pcfg := cfg.Platforms[mr.Platform.Name()]
+
+	// npm 只读代理：拒绝 publish 等写方法
+	if m.Platform == "npm" {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+		default:
+			http.Error(w, "npm mirror is read-only", http.StatusMethodNotAllowed)
+			return
+		}
+	}
 
 	prio := scheduler.PriorityInteractive
 	if r.Header.Get("X-Mirrorhub-Priority") == "prefetch" {
@@ -174,6 +186,8 @@ func rememberIndexDigests(body []byte, pageURL string) {
 			downloader.RememberDigest(ref.URL, ref.SHA256)
 		}
 	}
+	// npm packument 的 integrity 多为 sha512，下载器当前按 SHA256 校验；此处仅占位遍历，避免漏接扩展点
+	_ = npmhandler.ExtractTarballDigests(body)
 }
 
 func matchETag(inm, etag string) bool {

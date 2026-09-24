@@ -102,22 +102,30 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request, m *router
 	fetchURL := origURL
 	var size int64 = -1
 	hasSize := false
-	hs, headCT, finalURL, headErr := s.dl.Head(r.Context(), origURL, headers)
-	if headErr == nil {
-		if pypihandler.IsHTMLContentType(headCT) {
-			err := fmt.Errorf("upstream returned HTML for package path (not an artifact)")
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return "miss", "proxy", err
-		}
-		size = hs
-		hasSize = true
-		if finalURL != "" {
-			fetchURL = finalURL
+	// npm 交互冷路径跳过上游 HEAD：制品普遍较小且 ServePackage 本身走串行流式，
+	// HEAD 只会多一轮公网 RTT。预取仍探测大小以便并行分片。
+	skipHead := m.Platform == "npm" && !prefetch
+	if !skipHead {
+		hs, headCT, finalURL, headErr := s.dl.Head(r.Context(), origURL, headers)
+		if headErr == nil {
+			if pypihandler.IsHTMLContentType(headCT) {
+				err := fmt.Errorf("upstream returned HTML for package path (not an artifact)")
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return "miss", "proxy", err
+			}
+			size = hs
+			hasSize = true
+			if finalURL != "" {
+				fetchURL = finalURL
+			}
 		}
 	}
 
 	fileBoost := boost
-	if !prefetch && cfg.Scheduler.SmallFileBoost.Enabled {
+	if skipHead && !prefetch {
+		// 无大小信息时默认插队，避免冷装被预取占满
+		fileBoost = true
+	} else if !prefetch && cfg.Scheduler.SmallFileBoost.Enabled {
 		maxBoost := int64(cfg.Scheduler.SmallFileBoost.MaxSizeKB) * 1024
 		if hasSize && size >= 0 {
 			if (pypi.Download.MinSize > 0 && size < pypi.Download.MinSize) || (maxBoost > 0 && size <= maxBoost) {

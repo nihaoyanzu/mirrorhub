@@ -12,6 +12,7 @@ const guide = ref<PublicGuide | null>(null)
 const copied = ref('')
 const activeTab = ref('')
 const toolTab = ref<'pip' | 'uv'>('pip')
+const npmToolTab = ref<'npm' | 'pnpm' | 'yarn'>('npm')
 
 const loggedIn = computed(() => !!getToken())
 
@@ -33,6 +34,7 @@ function accessDownloadURL(proxyPort: string): string {
 
 const baseURL = computed(() => accessDownloadURL(guide.value?.proxy_port || '18081'))
 const indexURL = computed(() => `${baseURL.value}/simple/`)
+const registryURL = computed(() => `${baseURL.value}/`)
 const displayHost = computed(() => baseURL.value.replace(/^https?:\/\//i, ''))
 
 const trustedHost = computed(() => {
@@ -74,7 +76,42 @@ const uvSnippets = computed(() => [
   },
 ])
 
+const npmSnippets = computed(() => [
+  {
+    key: 'npmOnce',
+    title: t('guide.npmOnce'),
+    text: `npm config set registry ${registryURL.value}`,
+  },
+  {
+    key: 'npmConfig',
+    title: t('guide.npmConfig'),
+    text: `# .npmrc\nregistry=${registryURL.value}`,
+  },
+])
+
+const pnpmSnippets = computed(() => [
+  {
+    key: 'pnpmConfig',
+    title: t('guide.pnpmConfig'),
+    text: `pnpm config set registry ${registryURL.value}`,
+  },
+])
+
+const yarnSnippets = computed(() => [
+  {
+    key: 'yarnConfig',
+    title: t('guide.yarnConfig'),
+    text: `yarn config set registry ${registryURL.value}`,
+  },
+])
+
 const activeSnippets = computed(() => (toolTab.value === 'pip' ? pipSnippets.value : uvSnippets.value))
+
+const activeNpmSnippets = computed(() => {
+  if (npmToolTab.value === 'pnpm') return pnpmSnippets.value
+  if (npmToolTab.value === 'yarn') return yarnSnippets.value
+  return npmSnippets.value
+})
 
 function syncTab() {
   const ids = enabledModules.value.map((m) => m.id)
@@ -106,6 +143,7 @@ async function copyText(key: string, text: string) {
 
 function moduleTitle(id: string) {
   if (id === 'pypi') return 'PyPI'
+  if (id === 'npm') return 'npm'
   return id
 }
 
@@ -116,7 +154,10 @@ onMounted(async () => {
   } catch {
     guide.value = {
       proxy_port: '18081',
-      modules: [{ id: 'pypi', enabled: true }],
+      modules: [
+        { id: 'pypi', enabled: true },
+        { id: 'npm', enabled: false },
+      ],
     }
   } finally {
     syncTab()
@@ -205,6 +246,60 @@ onMounted(async () => {
             <div class="grid gap-3 p-4 sm:p-5">
               <article
                 v-for="item in activeSnippets"
+                :key="item.key"
+                class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
+              >
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <h3 class="text-sm font-medium text-fg">{{ item.title }}</h3>
+                  <button
+                    type="button"
+                    class="ui-btn-ghost !px-2 !py-1 text-xs"
+                    @click="copyText(item.key, item.text)"
+                  >
+                    {{ copied === item.key ? t('guide.copied') : t('guide.copy') }}
+                  </button>
+                </div>
+                <pre
+                  class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-muted"
+                >{{ item.text }}</pre>
+              </article>
+            </div>
+          </section>
+
+          <section v-else-if="activeTab === 'npm'" class="ui-panel overflow-hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4 sm:p-5">
+              <p class="text-xs text-muted">{{ t('guide.npmHint') }}</p>
+              <div class="flex gap-1 rounded-xl border border-line bg-bg/60 p-1">
+                <button
+                  type="button"
+                  class="ui-chip"
+                  :class="{ 'ui-chip-active': npmToolTab === 'npm' }"
+                  @click="npmToolTab = 'npm'"
+                >
+                  npm
+                </button>
+                <button
+                  type="button"
+                  class="ui-chip"
+                  :class="{ 'ui-chip-active': npmToolTab === 'pnpm' }"
+                  @click="npmToolTab = 'pnpm'"
+                >
+                  pnpm
+                </button>
+                <button
+                  type="button"
+                  class="ui-chip"
+                  :class="{ 'ui-chip-active': npmToolTab === 'yarn' }"
+                  @click="npmToolTab = 'yarn'"
+                >
+                  yarn
+                </button>
+              </div>
+            </div>
+
+            <div class="grid gap-3 p-4 sm:p-5">
+              <article
+                v-for="item in activeNpmSnippets"
                 :key="item.key"
                 class="rounded-xl border border-line bg-bg/40 p-3 sm:p-4"
               >

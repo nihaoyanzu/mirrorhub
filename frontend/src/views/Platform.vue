@@ -17,6 +17,7 @@ const saving = ref(false)
 const testing = ref(false)
 const dirty = ref(false)
 const tab = ref<'access' | 'download' | 'prefetch' | 'cache'>('access')
+const moduleId = ref<'pypi' | 'npm'>('pypi')
 const showClearModal = ref(false)
 const clearing = ref(false)
 const testChecks = ref<AccessTestCheck[] | null>(null)
@@ -49,12 +50,37 @@ const systemNet = reactive({
   upstream_proxy: '',
 })
 
-const tabs = computed(() => [
-  { id: 'access' as const, label: t('platform.tabAccess') },
-  { id: 'download' as const, label: t('platform.tabDownload') },
-  { id: 'prefetch' as const, label: t('platform.tabPrefetch') },
-  { id: 'cache' as const, label: t('platform.tabCache') },
-])
+/** 切换模块时暂存各平台表单，避免丢失未保存编辑以外的已加载值 */
+const platformDrafts = reactive<Record<string, {
+  enabled: boolean
+  upstream: string
+  file_upstream: string
+  metadata_upstream: string
+  concurrency: number
+  chunk_size: number
+  min_size: number
+}>>({})
+
+const tabs = computed(() => {
+  const base = [
+    { id: 'access' as const, label: t('platform.tabAccess') },
+    { id: 'download' as const, label: t('platform.tabDownload') },
+  ]
+  if (moduleId.value === 'pypi') {
+    base.push({ id: 'prefetch' as const, label: t('platform.tabPrefetch') })
+  }
+  base.push({ id: 'cache' as const, label: t('platform.tabCache') })
+  return base
+})
+
+const moduleOptions = [
+  { id: 'pypi' as const, labelKey: 'platform.modulePyPI' },
+  { id: 'npm' as const, labelKey: 'platform.moduleNpm' },
+] as const
+
+const enableLabel = computed(() =>
+  moduleId.value === 'npm' ? t('platform.enableNpm') : t('platform.enablePyPI'),
+)
 
 const platformOptions = [
   { id: 'linux', labelKey: 'platform.platLinux' },
@@ -95,19 +121,62 @@ function syncTabFromRoute() {
   const q = String(route.query.tab || '')
   if (q === 'rate') {
     tab.value = 'download'
-    return
-  }
-  if (q === 'access' || q === 'download' || q === 'prefetch' || q === 'cache') {
+  } else if (q === 'access' || q === 'download' || q === 'prefetch' || q === 'cache') {
     tab.value = q
+  }
+  const mod = String(route.query.module || '')
+  if ((mod === 'pypi' || mod === 'npm') && mod !== moduleId.value) {
+    snapshotCurrentPlatform()
+    moduleId.value = mod
+    applyPlatformDraft(mod)
+    if (mod === 'npm' && tab.value === 'prefetch') {
+      tab.value = 'access'
+    }
   }
 }
 
 function setTab(id: typeof tab.value) {
   tab.value = id
-  router.replace({ query: { ...route.query, tab: id } })
+  router.replace({ query: { ...route.query, tab: id, module: moduleId.value } })
+}
+
+function snapshotCurrentPlatform() {
+  platformDrafts[moduleId.value] = {
+    enabled: form.enabled,
+    upstream: form.upstream,
+    file_upstream: form.file_upstream,
+    metadata_upstream: form.metadata_upstream,
+    concurrency: form.concurrency,
+    chunk_size: form.chunk_size,
+    min_size: form.min_size,
+  }
+}
+
+function applyPlatformDraft(id: 'pypi' | 'npm') {
+  const d = platformDrafts[id]
+  if (!d) return
+  form.enabled = d.enabled
+  form.upstream = d.upstream
+  form.file_upstream = d.file_upstream
+  form.metadata_upstream = d.metadata_upstream
+  form.concurrency = d.concurrency
+  form.chunk_size = d.chunk_size
+  form.min_size = d.min_size
+}
+
+function setModule(id: 'pypi' | 'npm') {
+  if (id === moduleId.value) return
+  snapshotCurrentPlatform()
+  moduleId.value = id
+  applyPlatformDraft(id)
+  if (id === 'npm' && tab.value === 'prefetch') {
+    tab.value = 'access'
+  }
+  router.replace({ query: { ...route.query, module: id, tab: tab.value } })
 }
 
 watch(() => route.query.tab, syncTabFromRoute)
+watch(() => route.query.module, syncTabFromRoute)
 
 function markDirty() {
   dirty.value = true
@@ -118,16 +187,29 @@ async function load() {
   try {
     const cfg: AppConfig = await api.getConfig()
     systemNet.upstream_proxy = cfg.server?.upstream_proxy || ''
-    const p = cfg.platforms?.pypi
-    if (p) {
-      form.enabled = !!p.enabled
-      form.upstream = p.upstream || ''
-      form.file_upstream = p.file_upstream || ''
-      form.metadata_upstream = p.metadata_upstream || ''
-      form.concurrency = p.download?.concurrency ?? 16
-      form.chunk_size = p.download?.chunk_size ?? 5242880
-      form.min_size = p.download?.min_size ?? 102400
+
+    const pypi = cfg.platforms?.pypi
+    platformDrafts.pypi = {
+      enabled: !!pypi?.enabled,
+      upstream: pypi?.upstream || 'https://mirrors.aliyun.com/pypi',
+      file_upstream: pypi?.file_upstream || 'https://mirrors.aliyun.com/pypi',
+      metadata_upstream: pypi?.metadata_upstream || '',
+      concurrency: pypi?.download?.concurrency ?? 16,
+      chunk_size: pypi?.download?.chunk_size ?? 5242880,
+      min_size: pypi?.download?.min_size ?? 102400,
     }
+    const npm = cfg.platforms?.npm
+    platformDrafts.npm = {
+      enabled: !!npm?.enabled,
+      upstream: npm?.upstream || 'https://registry.npmjs.org',
+      file_upstream: npm?.file_upstream || npm?.upstream || 'https://registry.npmjs.org',
+      metadata_upstream: npm?.metadata_upstream || '',
+      concurrency: npm?.download?.concurrency ?? 16,
+      chunk_size: npm?.download?.chunk_size ?? 5242880,
+      min_size: npm?.download?.min_size ?? 102400,
+    }
+    applyPlatformDraft(moduleId.value)
+
     if (cfg.cache) {
       form.index_ttl_seconds = cfg.cache.index_ttl_seconds
       form.package_ttl_seconds = cfg.cache.package_ttl_seconds
@@ -158,6 +240,23 @@ async function load() {
 async function save() {
   saving.value = true
   try {
+    snapshotCurrentPlatform()
+    const platforms: Record<string, unknown> = {}
+    for (const id of ['pypi', 'npm'] as const) {
+      const d = platformDrafts[id]
+      if (!d) continue
+      platforms[id] = {
+        enabled: d.enabled,
+        upstream: d.upstream,
+        file_upstream: d.file_upstream,
+        metadata_upstream: d.metadata_upstream,
+        download: {
+          concurrency: d.concurrency,
+          chunk_size: d.chunk_size,
+          min_size: d.min_size,
+        },
+      }
+    }
     await api.putConfig({
       cache: {
         max_size_gb: form.max_size_gb,
@@ -187,19 +286,7 @@ async function save() {
           max_size_kb: form.small_file_boost_kb,
         },
       },
-      platforms: {
-        pypi: {
-          enabled: form.enabled,
-          upstream: form.upstream,
-          file_upstream: form.file_upstream,
-          metadata_upstream: form.metadata_upstream,
-          download: {
-            concurrency: form.concurrency,
-            chunk_size: form.chunk_size,
-            min_size: form.min_size,
-          },
-        },
-      },
+      platforms,
     })
     dirty.value = false
     toast.ok(t('platform.saved'))
@@ -273,6 +360,19 @@ onMounted(() => {
 
     <div class="mb-4 flex flex-wrap gap-1 rounded-xl border border-line bg-panel/60 p-1">
       <button
+        v-for="item in moduleOptions"
+        :key="item.id"
+        type="button"
+        class="ui-tab"
+        :class="{ 'ui-tab-active': moduleId === item.id }"
+        @click="setModule(item.id)"
+      >
+        {{ t(item.labelKey) }}
+      </button>
+    </div>
+
+    <div class="mb-4 flex flex-wrap gap-1 rounded-xl border border-line bg-panel/60 p-1">
+      <button
         v-for="item in tabs"
         :key="item.id"
         type="button"
@@ -293,11 +393,12 @@ onMounted(() => {
               <span class="ui-switch-track" aria-hidden="true" />
               <span class="ui-switch-thumb" aria-hidden="true" />
             </span>
-            {{ t('platform.enablePyPI') }}
+            {{ enableLabel }}
           </label>
         </div>
 
         <h3 class="ui-section-title">{{ t('platform.sectionUpstream') }}</h3>
+        <p v-if="moduleId === 'npm'" class="mb-3 text-xs text-muted">{{ t('platform.npmUpstreamHint') }}</p>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
             <label class="ui-label">{{ t('platform.indexUpstream') }}</label>
@@ -307,7 +408,7 @@ onMounted(() => {
             <label class="ui-label">{{ t('platform.fileUpstream') }}</label>
             <input v-model="form.file_upstream" class="ui-input" />
           </div>
-          <div class="sm:col-span-2">
+          <div v-if="moduleId === 'pypi'" class="sm:col-span-2">
             <label class="ui-label">
               {{ t('platform.metadataUpstream') }}
               <span class="group relative ml-1 inline-flex cursor-help items-center">
@@ -327,13 +428,13 @@ onMounted(() => {
           </div>
         </div>
 
-        <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+        <div v-if="moduleId === 'pypi'" class="mt-5 flex flex-wrap items-center gap-3 border-t border-line pt-4">
           <button type="button" class="ui-btn" :disabled="loading || testing" @click.stop="testAccess">
             {{ testing ? t('platform.testing') : t('platform.testAccess') }}
           </button>
         </div>
 
-        <ul v-if="testChecks?.length" class="mt-4 space-y-2">
+        <ul v-if="moduleId === 'pypi' && testChecks?.length" class="mt-4 space-y-2">
           <li v-for="(c, i) in testChecks" :key="i" class="rounded-lg border border-line px-3 py-2 text-sm">
             <div class="flex flex-wrap items-center gap-2">
               <span
@@ -372,7 +473,8 @@ onMounted(() => {
       </section>
 
       <section v-show="tab === 'prefetch'" class="ui-panel p-5">
-        <div class="grid gap-4 sm:grid-cols-3">
+        <p v-if="moduleId === 'npm'" class="text-sm text-muted">{{ t('platform.npmPrefetchHint') }}</p>
+        <div v-else class="grid gap-4 sm:grid-cols-3">
           <div>
             <label class="ui-label">{{ t('platform.artifactMode') }}</label>
             <select v-model="form.artifact_mode" class="ui-input">
