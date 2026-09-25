@@ -75,6 +75,18 @@ type Manager struct {
 	store   *store.Store
 	stop    chan struct{}
 	done    chan struct{}
+
+	layoutMigrate layoutMigrateStats
+}
+
+type layoutMigrateStats struct {
+	moved, skipped, missing, pruned int
+}
+
+// ObjectLayoutMigrateStats 返回启动时按平台分区迁移的结果（供日志）。
+func (m *Manager) ObjectLayoutMigrateStats() (moved, skipped, missing, pruned int) {
+	s := m.layoutMigrate
+	return s.moved, s.skipped, s.missing, s.pruned
 }
 
 const (
@@ -122,6 +134,11 @@ func New(dir string, maxSizeGB float64, st *store.Store) (*Manager, error) {
 		store:   st,
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
+	}
+	moved, skipped, missing := m.migrateObjectLayout()
+	pruned := m.pruneEmptyLegacyObjectDirs()
+	m.layoutMigrate = layoutMigrateStats{
+		moved: moved, skipped: skipped, missing: missing, pruned: pruned,
 	}
 	m.loadCounters()
 	go m.persistLoop()
@@ -213,12 +230,171 @@ func KeyFromURL(url string) string {
 	return cachekey.FromURL(url)
 }
 
-func (m *Manager) filePath(key string) string {
+// sanitizePlatformDir 平台名作目录段；非法字符归 other，避免路径穿越。
+func sanitizePlatformDir(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	if p == "" {
+		return "other"
+	}
+	for _, c := range p {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
+			continue
+		}
+		return "other"
+	}
+	return p
+}
+
+func (m *Manager) objectKeySeg(key string) string {
 	sk := safeCacheKey(key)
 	if len(sk) < 2 {
 		sk = sk + "__"
 	}
+	return sk
+}
+
+// filePath 按平台分区：objects/{platform}/{sk[:2]}/{sk}
+func (m *Manager) filePath(key, platform string) string {
+	sk := m.objectKeySeg(key)
+	return filepath.Join(m.dir, "objects", sanitizePlatformDir(platform), sk[:2], sk)
+}
+
+// legacyFilePath 旧布局 objects/{sk[:2]}/{sk}（无平台段）。
+func (m *Manager) legacyFilePath(key string) string {
+	sk := m.objectKeySeg(key)
 	return filepath.Join(m.dir, "objects", sk[:2], sk)
+}
+
+// migrateObjectLayout 将旧 objects 布局迁到按平台分区，并更新 Entry.FilePath。
+func (m *Manager) migrateObjectLayout() (moved, skipped, missing int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var entries []Entry
+	_ = m.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketMeta)
+		return b.ForEach(func(_, v []byte) error {
+			var e Entry
+			if json.Unmarshal(v, &e) == nil {
+				entries = append(entries, e)
+			}
+			return nil
+		})
+	})
+
+	for i := range entries {
+		e := &entries[i]
+		if e.Key == "" {
+			missing++
+			continue
+		}
+		plat := ClassifyPlatform(*e)
+		newPath := m.filePath(e.Key, plat)
+
+		if _, err := os.Stat(newPath); err == nil {
+			if e.FilePath != newPath {
+				e.FilePath = newPath
+				_ = m.putMetaLocked(e)
+			}
+			skipped++
+			continue
+		}
+
+		src := ""
+		if e.FilePath != "" {
+			if _, err := os.Stat(e.FilePath); err == nil {
+				src = e.FilePath
+			}
+		}
+		if src == "" {
+			old := m.legacyFilePath(e.Key)
+			if _, err := os.Stat(old); err == nil {
+				src = old
+			}
+		}
+		if src == "" {
+			missing++
+			continue
+		}
+		if src == newPath {
+			if e.FilePath != newPath {
+				e.FilePath = newPath
+				_ = m.putMetaLocked(e)
+			}
+			skipped++
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+			missing++
+			continue
+		}
+		if err := moveFile(src, newPath); err != nil {
+			missing++
+			continue
+		}
+		e.FilePath = newPath
+		_ = m.putMetaLocked(e)
+		moved++
+	}
+	return moved, skipped, missing
+}
+
+// isLegacyShardDir 旧布局的两位 hex 分片目录（如 e1），不含平台名。
+func isLegacyShardDir(name string) bool {
+	if len(name) != 2 {
+		return false
+	}
+	for i := 0; i < 2; i++ {
+		c := name[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// pruneEmptyLegacyObjectDirs 删除迁移后留下的空 hex 分片目录，避免顶层看起来仍是旧布局。
+func (m *Manager) pruneEmptyLegacyObjectDirs() int {
+	objects := filepath.Join(m.dir, "objects")
+	ents, err := os.ReadDir(objects)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range ents {
+		if !e.IsDir() || !isLegacyShardDir(e.Name()) {
+			continue
+		}
+		path := filepath.Join(objects, e.Name())
+		if removeEmptyDirTree(path) {
+			n++
+		}
+	}
+	return n
+}
+
+// removeEmptyDirTree 若目录树内无文件则整棵删除；有文件则只清空子目录，返回是否删除了根。
+func removeEmptyDirTree(dir string) bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	empty := true
+	for _, e := range ents {
+		p := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			if !removeEmptyDirTree(p) {
+				empty = false
+			}
+			continue
+		}
+		empty = false
+	}
+	if !empty {
+		return false
+	}
+	return os.Remove(dir) == nil
 }
 
 func (m *Manager) Get(key string, platformHint ...string) (*Entry, bool) {
@@ -339,7 +515,8 @@ func (m *Manager) Put(key, srcPath, contentType string, ttlSeconds int, meta Met
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	dst := m.filePath(key)
+	plat := ClassifyPlatform(Entry{Key: key, SourceURL: meta.SourceURL, Kind: meta.Kind})
+	dst := m.filePath(key, plat)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return nil, err
 	}

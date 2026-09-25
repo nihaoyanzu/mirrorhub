@@ -54,6 +54,14 @@ func main() {
 		log.Fatal("cache init", zap.Error(err))
 	}
 	defer cacheMgr.Close()
+	if moved, skipped, missing, pruned := cacheMgr.ObjectLayoutMigrateStats(); moved > 0 || pruned > 0 || missing > 0 {
+		log.Info("cache object layout migrate",
+			zap.Int("moved", moved),
+			zap.Int("skipped", skipped),
+			zap.Int("missing", missing),
+			zap.Int("pruned_empty_dirs", pruned),
+		)
+	}
 	downloader.InitDigestPersist(cfg.Cache.Dir)
 	if n, err := cacheMgr.PurgeIncomplete(); err != nil {
 		log.Fatal("purge incomplete cache", zap.Error(err))
