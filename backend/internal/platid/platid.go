@@ -30,10 +30,22 @@ func Of(key, sourceURL, kind string) string {
 func Belongs(platform, key, sourceURL, kind string) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
 	src := strings.TrimSpace(sourceURL)
+	kind = strings.TrimSpace(kind)
 	switch platform {
 	case "pypi":
-		if src == "" || strings.TrimSpace(kind) == "" {
+		// 索引键为 pypi:index:…；根 /simple/ 无包名，不能仅靠 ParseArtifactURL.Name
+		if strings.HasPrefix(key, "pypi:") {
+			return true
+		}
+		if src == "" {
 			return false
+		}
+		if kind == "index" || strings.Contains(src, "/simple/") {
+			return true
+		}
+		if kind == "metadata" || kind == "package" {
+			info := pypihandler.ParseArtifactURL(src, kind)
+			return info.Name != "" || strings.Contains(src, "/packages/")
 		}
 		info := pypihandler.ParseArtifactURL(src, kind)
 		return info.Name != ""
@@ -85,6 +97,14 @@ func looksLikeNPMPackument(raw string) bool {
 	if strings.HasPrefix(p, "/@") {
 		return strings.Count(p, "/") >= 2 && !strings.Contains(p, "/-/")
 	}
+	// 单段路径易误伤 PyPI 根 /simple/、Docker /v2 等
 	segs := strings.Split(strings.Trim(p, "/"), "/")
-	return len(segs) == 1 && segs[0] != "" && !strings.Contains(segs[0], ".")
+	if len(segs) != 1 || segs[0] == "" || strings.Contains(segs[0], ".") {
+		return false
+	}
+	switch strings.ToLower(segs[0]) {
+	case "simple", "packages", "v2", "maven2", "repository", "sumdb":
+		return false
+	}
+	return true
 }

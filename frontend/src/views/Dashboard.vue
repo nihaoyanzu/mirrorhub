@@ -38,11 +38,12 @@ const quotaLeft = computed(() => {
 
 const cacheSlices = computed(() => {
   const by = stats.value?.cache?.by_platform || {}
+  // 全部模块始终展示（含 0 占用），便于对照侧栏模块列表
   const slices = MODULES.map((d) => ({
     label: t(d.labelKey),
     value: Number(by[d.id] || 0),
     color: moduleColor(d.id),
-  })).filter((s) => s.value > 0)
+  }))
 
   const other = Number(by.other || 0)
   if (other > 0) {
