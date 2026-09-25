@@ -8,7 +8,7 @@
 >
 > Designed for constrained egress: **smart routing · parallel chunking · interactive-first scheduling · one-box ops**
 
-**PyPI works today.** Hugging Face / npm / Docker are on the roadmap.
+**PyPI, npm, Docker, Go modules, Hugging Face, and Maven/Gradle** share one download + cache + rate plane (enable per module).
 
 ![Admin dashboard](docs/pic/UI-EN.png)
 
@@ -70,17 +70,17 @@ Typical flow: **prefetch (or install once) online → artifacts on disk → keep
 
 - **Wheels / sdists** serve as local HITs with no outbound calls  
 - **Indexes / metadata** that expire while upstream is down fall back to the last cached copy (`X-Cache: STALE`) so installs don’t die on a dead link  
-- Anything not cached still needs the network — warm the target platforms and closure via prefetch before you go offline (package-count cap is configurable)
+- Anything not cached still needs the network — warm the target platforms and dependency closure via prefetch before you go offline
 
 ### 6. One container, zero client sprawl
 
 - Single image: Go binary + embedded admin UI + SQLite (or Postgres if you prefer)
 - Data on a volume (`/data`) — **update the image, keep the cache**
-- **Public setup guide** at `/` (no login; default entry): pick a local download address, copy `pip` / `uv` snippets
+- **Public setup guide** at `/` (no login; default entry): pick a local download address, copy client snippets
 
-### 7. Built to grow beyond PyPI
+### 7. Multi-source, one ops model
 
-Platforms are **modules** (enable, upstreams, download knobs). PyPI ships now; HF / npm / Docker plug into the same download + cache + rate plane later — one habit for the whole org.
+Platforms are **modules** (enable, upstreams, download knobs). PyPI, npm, Docker, Go, Hugging Face, and Maven plug into the **same** download + cache + rate plane — one habit for the whole org.
 
 ```text
   Dev / CI                              Public upstream
@@ -110,7 +110,7 @@ Platforms are **modules** (enable, upstreams, download knobs). PyPI ships now; H
 | 🎚️ | Windowed rate limits | Protect the shared pipe; don’t punish interactive installs |
 | 🔥 | Prefetch + live queue UX | Warm cache with progress you can trust |
 | 📊 | Admin UI | Capacity, hits, P0/P1, packages, settings in one place |
-| 🧩 | Modular platforms | Same ops model as you add sources |
+| 🧩 | Modular platforms | Same ops model across PyPI / npm / Docker / Go / HF / Maven |
 
 ---
 
@@ -141,8 +141,11 @@ Use **devpi** when you need a private package warehouse. Many teams run both.
 flowchart LR
   subgraph clients [Clients]
     PIP[pip / uv]
-    HF[huggingface-cli]
     NPM[npm]
+    DOCKER[docker]
+    GO[go]
+    HF[huggingface-cli]
+    MVN[mvn / gradle]
   end
 
   subgraph mh [MirrorHub]
@@ -158,23 +161,54 @@ flowchart LR
 
   subgraph remote [Public upstream]
     PYPI[PyPI]
-    HFHUB[HuggingFace]
     NPMREG[npm]
+    DREG[Docker Hub]
+    GOMOD[Go proxy]
+    HFHUB[HuggingFace]
+    MAVEN[Maven]
   end
 
   PIP --> DL
-  HF -.->|planned| DL
-  NPM -.->|planned| DL
+  NPM --> DL
+  DOCKER --> DL
+  GO --> DL
+  HF --> DL
+  MVN --> DL
   ADM -.-> DL
   DL --> CACHE
   CACHE -->|MISS| RATE
   RATE --> UP
   UP --> PYPI
-  UP -.-> HFHUB
-  UP -.-> NPMREG
+  UP --> NPMREG
+  UP --> DREG
+  UP --> GOMOD
+  UP --> HFHUB
+  UP --> MAVEN
   RATE -->|direct| PYPI
   CACHE -->|HIT| clients
 ```
+
+### Data layout
+
+Root: `MIRRORHUB_DATA_DIR` (default `./data`; Compose usually `/data`). Ops settings live in SQLite (`mirrorhub.db`) or Postgres via `DATABASE_URL`.
+
+```text
+data/
+├── mirrorhub.db          # config, admin user, light stats (if not using Postgres)
+├── logs/
+└── cache/
+    ├── meta.db           # cache entry metadata (bbolt)
+    ├── digests.json      # expected digests
+    ├── catalog/          # e.g. PyPI package-name catalog
+    ├── objects/
+    │   ├── pypi/ab/…     # artifacts partitioned by platform
+    │   ├── npm/…
+    │   ├── docker/…
+    │   └── …
+    └── tmp_*.part        # in-flight downloads
+```
+
+On startup, legacy `objects/{ab}/{hash}` trees are **migrated** into `objects/{platform}/…` and empty shard dirs are pruned. Capacity limits remain **global** (`max_size_gb`), not per-platform quotas.
 
 ---
 
@@ -239,10 +273,10 @@ pip ──► /simple/     index (links rewritten to the download service)
 Prefetch, queues (with progress), and package search live in the admin UI.  
 Rate limits: **System → pull rate** (aimed at prefetch; interactive stays preferred).
 
-### 4. Other clients (planned)
+### 4. Other clients
 
-| Client | Status | Expected config |
-|--------|:------:|-----------------|
+| Client | Status | Config |
+|--------|:------:|--------|
 | pip / uv | ✅ | `-i http://localhost:18081/simple/` |
 | npm | ✅ | `npm config set registry http://localhost:18081/` |
 | Docker | ✅ | `registry-mirrors` → `http://localhost:18081` |

@@ -8,7 +8,7 @@
 >
 > 面向受限出口而设计：**智能路由 · 并行分片 · 交互优先调度 · 单机可运维**
 
-当前 **PyPI 已可用**；Hugging Face / npm / Docker 在规划中。
+**PyPI、npm、Docker、Go modules、Hugging Face、Maven/Gradle** 共用同一套下载 + 缓存 + 限速平面（按模块启用）。
 
 ![管理台仪表盘](docs/pic/UI.png)
 
@@ -70,17 +70,17 @@ MirrorHub 不是「又一个 PyPI 镜像」，而是按内网真实装包方式�
 
 - **制品（wheel / sdist）** 命中本地后直出，不依赖外网  
 - **索引 / metadata** 过期且上游不可达时，自动回退本地过期副本（`X-Cache: STALE`），安装流程不因短暂断网中断  
-- 未进缓存的包仍会回源；离线前请用预取把目标平台与依赖闭包灌满（包数上限可配）
+- 未进缓存的包仍会回源；离线前请用预取把目标平台与依赖闭包灌满
 
 ### 6. 单容器，客户端零扩散
 
 - 一个镜像：Go 二进制 + 内嵌管理台 + SQLite（也可接 Postgres）
 - 数据落 volume（`/data`）—— **换镜像保留缓存**
-- **公开说明页** `/`（免登录，默认入口）：选本机下载地址，一键复制 `pip` / `uv` 命令
+- **公开说明页** `/`（免登录，默认入口）：选本机下载地址，一键复制客户端命令
 
-### 7. 为多源扩展而留位
+### 7. 多源统一，运维一套习惯
 
-平台按 **模块** 启用（上游、下载参数）。PyPI 已交付；HF / npm / Docker 将来接入同一套下载 + 缓存 + 限速平面 —— 组织内只学一套习惯。
+平台按 **模块** 启用（上游、下载参数）。PyPI、npm、Docker、Go、Hugging Face、Maven 接入 **同一套** 下载 + 缓存 + 限速平面 —— 组织内只学一套习惯。
 
 ```text
   开发机 / CI                         公网上游
@@ -110,7 +110,7 @@ MirrorHub 不是「又一个 PyPI 镜像」，而是按内网真实装包方式�
 | 🎚️ | 时段限速 | 护住共享管道；不惩罚交互安装 |
 | 🔥 | 预取 + 可信队列 UX | 预热缓存，进度可核对 |
 | 📊 | 管理台 | 容量、命中、P0/P1、包检索、设置一处搞定 |
-| 🧩 | 模块化平台 | 加源时运维模型不变 |
+| 🧩 | 模块化平台 | PyPI / npm / Docker / Go / HF / Maven 共用同一运维模型 |
 
 ---
 
@@ -141,8 +141,11 @@ devpi：   客户端 ──► 索引树 ─┬─► 私有包
 flowchart LR
   subgraph clients [客户端]
     PIP[pip / uv]
-    HF[huggingface-cli]
     NPM[npm]
+    DOCKER[docker]
+    GO[go]
+    HF[huggingface-cli]
+    MVN[mvn / gradle]
   end
 
   subgraph mh [MirrorHub]
@@ -158,23 +161,54 @@ flowchart LR
 
   subgraph remote [公网上游]
     PYPI[PyPI]
-    HFHUB[HuggingFace]
     NPMREG[npm]
+    DREG[Docker Hub]
+    GOMOD[Go proxy]
+    HFHUB[HuggingFace]
+    MAVEN[Maven]
   end
 
   PIP --> DL
-  HF -.->|规划| DL
-  NPM -.->|规划| DL
+  NPM --> DL
+  DOCKER --> DL
+  GO --> DL
+  HF --> DL
+  MVN --> DL
   ADM -.-> DL
   DL --> CACHE
   CACHE -->|MISS| RATE
   RATE --> UP
   UP --> PYPI
-  UP -.-> HFHUB
-  UP -.-> NPMREG
+  UP --> NPMREG
+  UP --> DREG
+  UP --> GOMOD
+  UP --> HFHUB
+  UP --> MAVEN
   RATE -->|直连| PYPI
   CACHE -->|HIT| clients
 ```
+
+### 数据与缓存布局
+
+数据根：`MIRRORHUB_DATA_DIR`（默认 `./data`；Compose 多为 `/data`）。运营配置在 SQLite（`mirrorhub.db`）或经 `DATABASE_URL` 使用 Postgres。
+
+```text
+data/
+├── mirrorhub.db          # 配置、管理员、轻量统计（未用 Postgres 时）
+├── logs/
+└── cache/
+    ├── meta.db           # 缓存条目元数据（bbolt）
+    ├── digests.json      # 期望摘要
+    ├── catalog/          # 如 PyPI 包名目录
+    ├── objects/
+    │   ├── pypi/ab/…     # 各模块制品按平台分区
+    │   ├── npm/…
+    │   ├── docker/…
+    │   └── …
+    └── tmp_*.part        # 下载中临时文件
+```
+
+启动时若发现旧布局 `objects/{ab}/{hash}`，会 **自动迁到** `objects/{platform}/…` 并清理空分片目录。容量上限仍是 **全局** `max_size_gb`（非按平台硬配额）。
 
 ---
 
@@ -239,10 +273,10 @@ pip ──► /simple/     索引（链接已改写到下载服务）
 预取、带进度的队列、包检索都在管理台。  
 限速见 **系统设置 → 拉取限速**（主要约束预取；交互优先）。
 
-### 4. 其他客户端（规划中）
+### 4. 其他客户端
 
-| 客户端 | 状态 | 预期配置 |
-|--------|:----:|----------|
+| 客户端 | 状态 | 配置 |
+|--------|:----:|------|
 | pip / uv | ✅ | `-i http://localhost:18081/simple/` |
 | npm | ✅ | `npm config set registry http://localhost:18081/` |
 | Docker | ✅ | `registry-mirrors` → `http://localhost:18081` |
